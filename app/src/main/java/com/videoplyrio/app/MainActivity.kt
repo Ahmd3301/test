@@ -3,6 +3,8 @@ package com.videoplyrio.app
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
@@ -16,9 +18,12 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var webView: WebView
+    private lateinit var mainWebView: WebView
+    private var extractorWebView: WebView? = null
     private var pendingPlaylistData: String? = null
     private var isPageLoaded = false
+    private val handler = Handler(Looper.getMainLooper())
+    private var pollingRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,7 +39,7 @@ class MainActivity : AppCompatActivity() {
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
-        webView = WebView(this).apply {
+        mainWebView = WebView(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -42,31 +47,27 @@ class MainActivity : AppCompatActivity() {
             isHorizontalScrollBarEnabled = false
             isVerticalScrollBarEnabled = false
         }
-        setContentView(webView)
+        setContentView(mainWebView)
 
         setupWebView()
         handleIntent(intent)
     }
 
     private fun setupWebView() {
-        webView.settings.apply {
+        mainWebView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             allowFileAccess = true
             allowContentAccess = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-            
-            // إلغاء تفعيل قيود استهلاك الإيماءات لبدء الفيديو وملء الشاشة ذاتياً تلقائياً
             mediaPlaybackRequiresUserGesture = false
-            
             allowFileAccessFromFileURLs = true
             allowUniversalAccessFromFileURLs = true
         }
 
-        // تسجيل الجسر البرمجي مع جافا سكربت لإغلاق النشاط عند الطلب
-        webView.addJavascriptInterface(WebAppInterface(this), "AndroidBridge")
+        mainWebView.addJavascriptInterface(WebAppInterface(this), "AndroidBridge")
 
-        webView.webViewClient = object : WebViewClient() {
+        mainWebView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 isPageLoaded = true
@@ -77,7 +78,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        webView.loadUrl("file:///android_asset/player.html")
+        mainWebView.loadUrl("file:///android_asset/player.html")
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -105,14 +106,138 @@ class MainActivity : AppCompatActivity() {
 
     private fun executePlaylistLoad(base64Data: String) {
         val cleanData = base64Data.replace("\\s".toRegex(), "")
-        webView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
+        mainWebView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
+    }
+
+    // دالة بدء عملية التحليل والاستخراج الصامت بالخلفية [2.1, 2.2]
+    fun startBackgroundExtraction(mainUrl: String) {
+        runOnUiThread {
+            mainWebView.evaluateJavascript("window.showLoadingLoop()", null)
+        }
+
+        stopExtraction()
+
+        // تهيئة متصفح معزول وغير مرئي بالخلفية
+        extractorWebView = WebView(this).apply {
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            }
+        }
+
+        val extraHeaders = HashMap<String, String>()
+        extraHeaders["Referer"] = "https://faselhd.center/"
+
+        extractorWebView?.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+
+                // الخطوة الأولى: استخراج رابط مشغل الـ Iframe من صفحة الويب
+                val jsGetIframe = """
+                    (function() {
+                        var firstLi = document.querySelector('li[onclick*="player_iframe.location.href"]');
+                        if (firstLi) {
+                            var onclick = firstLi.getAttribute('onclick');
+                            var match = onclick.match(/'([^']+)'/);
+                            return match ? match[1] : null;
+                        }
+                        return null;
+                    })()
+                """.trimIndent()
+
+                extractorWebView?.evaluateJavascript(jsGetIframe) { iframeUrl ->
+                    val cleanIframeUrl = iframeUrl?.replace("\"", "")?.trim()
+                    if (!cleanIframeUrl.isNullOrEmpty() && cleanIframeUrl != "null") {
+                        // الانتقال للخطوة الثانية: تحميل رابط الـ Iframe في متصفح الخلفية
+                        loadIframeAndExtractM3u8(cleanIframeUrl)
+                    } else {
+                        cancelLoadingLoop()
+                    }
+                }
+            }
+        }
+
+        extractorWebView?.loadUrl(mainUrl, extraHeaders)
+    }
+
+    private fun loadIframeAndExtractM3u8(iframeUrl: String) {
+        val extraHeaders = HashMap<String, String>()
+        extraHeaders["Referer"] = "https://faselhd.center/"
+
+        extractorWebView?.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                startPollingForM3u8()
+            }
+        }
+        extractorWebView?.loadUrl(iframeUrl, extraHeaders)
+    }
+
+    private fun startPollingForM3u8() {
+        // الاستعلام الدوري عالي الأداء لاكتشاف زر الـ .m3u8 المتولد حركياً
+        val jsPoll = """
+            (function() {
+                var buttons = document.querySelectorAll('button.hd_btn');
+                for (var i = 0; i < buttons.length; i++) {
+                    var dataUrl = buttons[i].getAttribute('data-url');
+                    if (dataUrl && dataUrl.indexOf('.m3u8') !== -1) {
+                        return dataUrl;
+                    }
+                }
+                return null;
+            })()
+        """.trimIndent()
+
+        pollingRunnable = object : Runnable {
+            override fun run() {
+                extractorWebView?.evaluateJavascript(jsPoll) { m3u8Url ->
+                    val cleanM3u8 = m3u8Url?.replace("\"", "")?.trim()
+                    if (!cleanM3u8.isNullOrEmpty() && cleanM3u8 != "null") {
+                        runOnUiThread {
+                            mainWebView.evaluateJavascript("window.hideLoadingLoop()", null)
+                            mainWebView.evaluateJavascript("window.playExtractedUrl('$cleanM3u8')", null)
+                        }
+                        stopExtraction()
+                    } else {
+                        handler.postDelayed(this, 300)
+                    }
+                }
+            }
+        }
+        pollingRunnable?.let { handler.post(it) }
+
+        // وقت أقصى للاستجابة (12 ثانية) لمنع الاستهلاك اللانهائي في حال تعثر الخادم
+        handler.postDelayed({
+            stopExtraction()
+            cancelLoadingLoop()
+        }, 12000)
+    }
+
+    private fun cancelLoadingLoop() {
+        runOnUiThread {
+            mainWebView.evaluateJavascript("window.hideLoadingLoop()", null)
+        }
+    }
+
+    private fun stopExtraction() {
+        pollingRunnable?.let { handler.removeCallbacks(it) }
+        pollingRunnable = null
+        extractorWebView?.stopLoading()
+        extractorWebView = null
     }
 }
 
-// واجهة الجسر البرمجي لاستدعاء أوامر أندرويد من متصفح WebView
 class WebAppInterface(private val activity: MainActivity) {
     @JavascriptInterface
     fun closeApp() {
-        activity.finishAffinity() // إغلاق التطبيق كلياً وبشكل نظيف
+        activity.finishAffinity()
+    }
+
+    // استدعاء بدء عملية الاستخراج بالخلفية من كود الويب
+    @JavascriptInterface
+    fun triggerExtraction(url: String) {
+        activity.startBackgroundExtraction(url)
     }
 }
