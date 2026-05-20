@@ -122,6 +122,43 @@ class MainActivity : AppCompatActivity() {
         mainWebView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
     }
 
+    // دالة استخلاص وتحويل الروابط من نسبية إلى مطلقة [3.1]
+    private fun resolveAbsoluteUrl(baseUrl: String, relativeUrl: String): String {
+        val trimmed = relativeUrl.trim()
+        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+            return trimmed
+        }
+        if (trimmed.startsWith("//")) {
+            return "https:$trimmed"
+        }
+        return try {
+            val uri = android.net.Uri.parse(baseUrl)
+            val scheme = uri.scheme ?: "https"
+            val host = uri.host ?: ""
+            if (trimmed.startsWith("/")) {
+                "$scheme://$host$trimmed"
+            } else {
+                "$scheme://$host/$trimmed"
+            }
+        } catch (e: Exception) {
+            trimmed
+        }
+    }
+
+    // دالة توليد رأس الـ Referer متطابق تلقائياً مع نطاق الميرور المطلوب لمنع الحظر [3.1]
+    private fun getRefererHeaders(url: String): HashMap<String, String> {
+        val headers = HashMap<String, String>()
+        try {
+            val uri = android.net.Uri.parse(url)
+            val scheme = uri.scheme ?: "https"
+            val host = uri.host ?: "faselhd.center"
+            headers["Referer"] = "$scheme://$host/"
+        } catch (e: Exception) {
+            headers["Referer"] = "https://faselhd.center/"
+        }
+        return headers
+    }
+
     fun startBackgroundExtraction(mainUrl: String) {
         runOnUiThread {
             mainWebView.evaluateJavascript("window.showLoadingLoop()", null)
@@ -137,8 +174,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            val extraHeaders = HashMap<String, String>()
-            extraHeaders["Referer"] = "https://faselhd.center/"
+            val extraHeaders = getRefererHeaders(mainUrl)
 
             extractorWebView?.webViewClient = object : WebViewClient() {
                 override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
@@ -157,7 +193,7 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
-                    startPollingForIframe()
+                    startPollingForIframe(mainUrl)
                 }
             }
 
@@ -165,7 +201,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startPollingForIframe() {
+    private fun startPollingForIframe(baseUrl: String) {
         val jsGetIframe = """
             (function() {
                 var firstLi = document.querySelector('li[onclick*="player_iframe.location.href"]');
@@ -185,7 +221,9 @@ class MainActivity : AppCompatActivity() {
                         val cleanIframeUrl = iframeUrl?.replace("\"", "")?.trim()
                         if (!cleanIframeUrl.isNullOrEmpty() && cleanIframeUrl != "null") {
                             stopIframePolling()
-                            loadIframeAndExtractM3u8(cleanIframeUrl)
+                            // معالجة الروابط لضمان كونها مطلقة وموثوقة [3.1]
+                            val absoluteIframeUrl = resolveAbsoluteUrl(baseUrl, cleanIframeUrl)
+                            loadIframeAndExtractM3u8(baseUrl, absoluteIframeUrl)
                         } else {
                             handler.postDelayed(this, 150)
                         }
@@ -201,10 +239,9 @@ class MainActivity : AppCompatActivity() {
         iframePollingRunnable = null
     }
 
-    private fun loadIframeAndExtractM3u8(iframeUrl: String) {
+    private fun loadIframeAndExtractM3u8(baseUrl: String, iframeUrl: String) {
         runOnUiThread {
-            val extraHeaders = HashMap<String, String>()
-            extraHeaders["Referer"] = "https://faselhd.center/"
+            val extraHeaders = getRefererHeaders(iframeUrl)
 
             extractorWebView?.webViewClient = object : WebViewClient() {
                 override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
