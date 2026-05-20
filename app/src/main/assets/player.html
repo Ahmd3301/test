@@ -45,7 +45,7 @@
             height: 100%;
             background: #000;
             overflow: hidden;
-            padding: 0 !important; /* إلغاء هوامش الأمان لملء الشاشة بالكامل خلف النوتش */
+            padding: 0 !important; /* ملء كامل الشاشة وإخفاء أي حواف سوداء */
         }
 
         .video-player-container {
@@ -184,6 +184,18 @@
     </div>
 
     <script>
+        // الخدعة البرمجية (Polyfill) لخداع المشغل وإجباره على عرض زر الـ PiP الأصلي بكامل أناقته وتصميمه
+        document.pictureInPictureEnabled = true;
+        HTMLVideoElement.prototype.requestPictureInPicture = async function() {
+            if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
+                window.AndroidBridge.enterPip();
+            }
+            return {};
+        };
+        document.exitPictureInPicture = async function() {
+            return {};
+        };
+
         let shakaPlayer = null;
         let plyrPlayer = null;
 
@@ -206,24 +218,10 @@
         let currentTitle = currentPlaylist[0].title;
         let currentIndex = 0; // تتبع الفهرس لضمان ثبات العنصر النشط بالـ Playlist بدقة
 
-        function base64ToHex(str) {
-            let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
-            while (b64.length % 4 !== 0) b64 += '=';
-            const raw = window.atob(b64);
-            let hex = '';
-            for (let i = 0; i < raw.length; i++) {
-                let h = raw.charCodeAt(i).toString(16);
-                if (h.length === 1) h = '0' + h;
-                hex += h;
-            }
-            return hex;
-        }
-
         // فحص ذكي وتلقائي لتحديد هل الرابط يحتاج استخراج بالخلفية أم هو رابط بث مباشر [2.1, 2.2]
         function isExtractionTarget(url) {
             if (url.includes('##ex')) return true;
             const cleanUrl = url.split('###')[0].split('?')[0].toLowerCase();
-            // الفحص التلقائي لروابط فاصل إعلاني في الـ Playlist بدون وجود وسم يدوياً لكل رابط
             if (cleanUrl.includes('fasel') && !cleanUrl.endsWith('.m3u8') && !cleanUrl.endsWith('.mpd') && !cleanUrl.endsWith('.mp4')) {
                 return true;
             }
@@ -240,7 +238,7 @@
             if (plyrPlayer) { plyrPlayer.stop(); }
             if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
 
-            // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
+            // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج بالخلفية
             if (isExtractionTarget(url)) {
                 const cleanUrl = url.split('##ex')[0].trim();
                 if (window.AndroidBridge && typeof window.AndroidBridge.triggerExtraction === 'function') {
@@ -263,11 +261,13 @@
                 shaka.polyfill.installAll();
                 shakaPlayer = new shaka.Player(videoElement);
 
+                // ميزة البداية الفائقة السرعة (0.5 ثانية) مع التخزين المسبق الممتد لـ دقيقة كاملة (60 ثانية) لتجنب الانقطاع
                 shakaPlayer.configure({
                     streaming: {
-                        bufferingGoal: 8,      
-                        rebufferingGoal: 1.5,  
-                        bufferBehind: 10
+                        bufferingGoal: 60,     // التخزين المؤقت المسبق لمدة 60 ثانية بالخلفية لمواجهة انقطاع الإنترنت
+                        rebufferingGoal: 0.5,  // بدء التشغيل الفوري بمجرد جلب 0.5 ثانية فقط
+                        bufferBehind: 10,
+                        lowLatencyMode: true   // تفعيل نمط الاستجابة فائقة السرعة
                     }
                 });
 
@@ -294,9 +294,9 @@
                     const tracks = shakaPlayer.getVariantTracks();
                     const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a, b) => b - a);
 
-                    // تم إعادة إدراج زر 'fullscreen' لحل المشكلة [1.2]
+                    // تفعيل PiP و Fullscreen كأزرار أصلية
                     const plyrConfig = {
-                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'fullscreen'],
+                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
                         settings: ['quality', 'speed', 'captions']
                     };
 
@@ -318,7 +318,7 @@
             } else {
                 videoElement.src = manifestUri;
                 plyrPlayer = new Plyr(videoElement, {
-                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'fullscreen'],
+                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
                     seekTime: 10,
                     settings: ['speed', 'captions'],
                     fullscreen: { iosNative: true, video: true, container: '.plyr' },
@@ -347,11 +347,10 @@
         function initCustomUI(playerInstance) {
             playerContainer = videoElement.closest('.plyr');
 
-            // تأجيل عمليات تطويع وحقن الأزرار لتحدث داخل حدث الجاهزية الرسمي لـ Plyr لتجنب المشاكل [1.2]
+            // تأجيل عمليات تطويع الأزرار لتحدث داخل حدث الجاهزية لـ Plyr لضمان ظهور زر Fullscreen وزر PiP الأصلي
             playerInstance.on('ready', () => {
                 const controlsBar = playerContainer.querySelector('.plyr__controls');
 
-                // تطبيق فئة البعد الحالية حركياً على حاوية المشغل
                 playerContainer.classList.add(modes[currentMode]);
 
                 // 1. استنساخ وزر الـ Fullscreen وتطويعه للدوران بين أبعاد العرض الأربعة
@@ -375,37 +374,6 @@
                             'mode-original': 'Original Size'
                         };
                         newFsBtn.setAttribute('aria-label', labelMap[modes[currentMode]]);
-                    });
-                }
-
-                // 2. حقن وتثبيت زر الـ PiP قسرياً بشكل يدوي ومطابق تماماً لتصميم المشغل الأصلي لضمان ظهوره [2.1, 2.2]
-                if (controlsBar) {
-                    const pipBtn = document.createElement('button');
-                    pipBtn.type = 'button';
-                    pipBtn.className = 'plyr__control';
-                    pipBtn.setAttribute('data-plyr', 'pip');
-                    pipBtn.setAttribute('aria-label', 'Picture in Picture');
-                    pipBtn.innerHTML = `
-                        <svg aria-hidden="true" focusable="false" viewBox="0 0 18 18">
-                            <path d="M16 2H2a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 12H2V4h14v10z"></path>
-                            <path d="M15 9h-5a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1zm-1 5h-3v-3h3v3z"></path>
-                        </svg>
-                    `;
-
-                    // حقن الزر قبل زر الـ Fullscreen الذكي
-                    const targetFsBtn = controlsBar.querySelector('[data-plyr="fullscreen"]');
-                    if (targetFsBtn) {
-                        controlsBar.insertBefore(pipBtn, targetFsBtn);
-                    } else {
-                        controlsBar.appendChild(pipBtn);
-                    }
-
-                    pipBtn.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
-                            window.AndroidBridge.enterPip();
-                        }
                     });
                 }
             });
@@ -457,6 +425,8 @@
 
             playerInstance.on('ready', () => {
                 playerInstance.play();
+                // فرض معدل السرعة الطبيعي دائماً فور جاهزية البث
+                playerInstance.speed = 1.0; 
             });
         }
 
