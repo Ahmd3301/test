@@ -90,7 +90,6 @@
             max-height: 100% !important; 
         }
 
-        /* كود إخفاء عناصر التحكم كلياً عند الدخول بوضع صورة داخل صورة PiP */
         .plyr--pip-active .plyr__controls, 
         .plyr--pip-active .plyr__title {
             display: none !important;
@@ -219,9 +218,9 @@
 
         let isPlaylistOpen = false;
         
-        // جعل التطبيق يفتح دائماً وبشكل تلقائي على وضع Stretch / Fill
+        // الأوضاع الأربعة لتغيير الأبعاد مع تعيين وضع Stretch / Fill ليعمل افتراضياً دائماً
         const modes = ['mode-contain', 'mode-cover', 'mode-fill', 'mode-original'];
-        let currentMode = 2; // فهرس رقم 2 يمثل وضع Stretch / Fill
+        let currentMode = 2; // البعد الافتراضي الدائم للمشغل هو Stretch / Fill
 
         let currentPlaylist = [
             { title: "Video #01", src: "https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-720p.mp4" },
@@ -229,6 +228,7 @@
         ];
         let currentSrc = currentPlaylist[0].src;
         let currentTitle = currentPlaylist[0].title;
+        let currentIndex = 0; // تتبع الفهرس لضمان ثبات العنصر النشط بالـ Playlist بدقة
 
         function base64ToHex(str) {
             let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
@@ -243,8 +243,19 @@
             return hex;
         }
 
+        // فحص ذكي وتلقائي لتحديد هل الرابط يحتاج استخراج بالخلفية أم هو رابط بث مباشر [2.1, 2.2]
+        function isExtractionTarget(url) {
+            if (url.includes('##ex')) return true;
+            const cleanUrl = url.split('###')[0].split('?')[0].toLowerCase();
+            // الفحص التلقائي لروابط فاصل إعلاني في الـ Playlist بدون وجود وسم يدوياً لكل رابط
+            if (cleanUrl.includes('fasel') && !cleanUrl.endsWith('.m3u8') && !cleanUrl.endsWith('.mpd') && !cleanUrl.endsWith('.mp4')) {
+                return true;
+            }
+            return false;
+        }
+
         async function loadStream(url) {
-            // إيقاف وكتم أي صوت يعمل بالخلفية فوراً قبل الاستدعاء [2.1, 2.2]
+            // إيقاف وكتم أي فيديو يعمل بالخلفية فوراً لمنع تسريب الصوت
             if (videoElement) {
                 videoElement.pause();
                 videoElement.src = "";
@@ -253,7 +264,8 @@
             if (plyrPlayer) { plyrPlayer.stop(); }
             if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
 
-            if (url.includes('##ex')) {
+            // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
+            if (isExtractionTarget(url)) {
                 const cleanUrl = url.split('##ex')[0].trim();
                 window.showLoadingLoop();
                 if (window.AndroidBridge && typeof window.AndroidBridge.triggerExtraction === 'function') {
@@ -308,7 +320,7 @@
                     const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a, b) => b - a);
 
                     const plyrConfig = {
-                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
+                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings'],
                         settings: ['quality', 'speed', 'captions']
                     };
 
@@ -330,7 +342,7 @@
             } else {
                 videoElement.src = manifestUri;
                 plyrPlayer = new Plyr(videoElement, {
-                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
+                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings'],
                     seekTime: 10,
                     settings: ['speed', 'captions'],
                     fullscreen: { iosNative: true, video: true, container: '.plyr' },
@@ -373,17 +385,18 @@
             playlistElement.className = 'plyr__playlist';
             playlistElement.innerHTML = `
                 <div class="playlist-wrapper">
-                    ${currentPlaylist.map((video) => `
-                        <div class="playlist-item${video.src === currentSrc ? ' active' : ''}" data-src="${video.src}">${video.title}</div>
+                    ${currentPlaylist.map((video, idx) => `
+                        <div class="playlist-item${idx === currentIndex ? ' active' : ''}" data-src="${video.src}">${video.title}</div>
                     `).join('')}
                 </div>
             `;
             playerContainer.appendChild(playlistElement);
 
             const playlistItems = playlistElement.querySelectorAll('.playlist-item');
-            playlistItems.forEach(item => {
+            playlistItems.forEach((item, idx) => {
                 item.addEventListener('click', (e) => {
                     e.stopPropagation();
+                    currentIndex = idx; // تتبع العنصر النشط رقمياً لثبات قائمة التشغيل
                     currentSrc = item.getAttribute('data-src');
                     currentTitle = item.textContent;
                     loadStream(currentSrc);
@@ -405,7 +418,9 @@
 
             playerContainer.classList.add(modes[currentMode]);
 
-            // تطويع واستبدال زر الـ Fullscreen ليقوم بعملية الدوران بين الأبعاد الأربعة
+            const controlsBar = playerContainer.querySelector('.plyr__controls');
+
+            // 1. استنساخ وزر الـ Fullscreen وتطويعه للدوران بين أبعاد العرض الأربعة
             const fsBtn = playerContainer.querySelector('[data-plyr="fullscreen"]');
             if (fsBtn) {
                 const newFsBtn = fsBtn.cloneNode(true);
@@ -429,13 +444,29 @@
                 });
             }
 
-            // ربط زر الـ PiP المدمج بجسر أندرويد البرمجي ليعمل بشكل أصلي [2.1, 2.2]
-            const pipBtn = playerContainer.querySelector('[data-plyr="pip"]');
-            if (pipBtn) {
-                const newPipBtn = pipBtn.cloneNode(true);
-                pipBtn.parentNode.replaceChild(newPipBtn, pipBtn);
+            // 2. حقن وتثبيت زر الـ PiP قسرياً بشكل يدوي ومطابق تماماً لتصميم المشغل الأصلي لضمان ظهوره [2.1, 2.2]
+            if (controlsBar) {
+                const pipBtn = document.createElement('button');
+                pipBtn.type = 'button';
+                pipBtn.className = 'plyr__control';
+                pipBtn.setAttribute('data-plyr', 'pip');
+                pipBtn.setAttribute('aria-label', 'Picture in Picture');
+                pipBtn.innerHTML = `
+                    <svg aria-hidden="true" focusable="false" viewBox="0 0 18 18">
+                        <path d="M16 2H2a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 12H2V4h14v10z"></path>
+                        <path d="M15 9h-5a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1zm-1 5h-3v-3h3v3z"></path>
+                    </svg>
+                `;
 
-                newPipBtn.addEventListener('click', (e) => {
+                // حقن الزر قبل زر الـ Fullscreen الذكي
+                const targetFsBtn = controlsBar.querySelector('[data-plyr="fullscreen"]');
+                if (targetFsBtn) {
+                    controlsBar.insertBefore(pipBtn, targetFsBtn);
+                } else {
+                    controlsBar.appendChild(pipBtn);
+                }
+
+                pipBtn.addEventListener('click', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
@@ -447,6 +478,9 @@
             playerInstance.on('ready', () => {
                 playerInstance.play();
             });
+
+            // إخفاء حلقة المعالجة تلقائياً فور نجاح تحميل المشغل وعرض الفيديو
+            window.hideLoadingLoop();
         }
 
         document.addEventListener('DOMContentLoaded', () => {
@@ -454,9 +488,9 @@
             const isDeeplink = urlParams.get('deeplink') === 'true';
             
             if (!isDeeplink) {
-                loadStream(currentSrc); // تشغيل الفيديو الافتراضي في حالة فتح التطبيق بشكل مباشر فقط
+                loadStream(currentSrc); 
             } else {
-                window.showLoadingLoop(); // كتم وعرض شاشة الانتظار فوراً عند الفتح برابط خارجي لمنع تسريب الصوت
+                window.showLoadingLoop(); // إظهار حلقة التحميل الصامتة فوراً عند الفتح برابط خارجي
             }
         });
 
@@ -482,6 +516,7 @@
                 var playlistData = JSON.parse(jsonStr);
 
                 if (playlistData && playlistData.length > 0) {
+                    currentIndex = 0; // البدء بالفيديو الأول افتراضياً
                     currentPlaylist = playlistData;
                     currentSrc = playlistData[0].src;
                     currentTitle = playlistData[0].title;
