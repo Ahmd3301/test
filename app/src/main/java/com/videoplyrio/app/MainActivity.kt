@@ -285,7 +285,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // تم تصحيح نوع المدخلات لـ Configuration ليتوافق تماماً مع توقيع الدالة الرئيسي بالنظام [1]
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         runOnUiThread {
