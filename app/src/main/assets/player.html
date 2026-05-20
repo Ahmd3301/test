@@ -5,11 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>مشغل الفيديو الاحترافي</title>
     
-    <!-- تضمين مكتبات تخطي CORS ومحرك Shaka Player المتطور -->
-    <script src="https://js.puter.com/v2/"></script>
+    <!-- تم الاستغناء تماماً عن Puter.js لسرعة اتصال مباشرة -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.6/shaka-player.compiled.js"></script>
     
-    <!-- تضمين واجهة Plyr الحديثة والمستقرة -->
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
     
@@ -195,39 +193,6 @@
         let currentSrc = currentPlaylist[0].src;
         let currentTitle = currentPlaylist[0].title;
 
-        // دالة تجاوز قيود CORS عبر وكيل Puter السحابي
-        async function puterSchemePlugin(uri, request, requestType) {
-            try {
-                const response = await puter.net.fetch(uri, {
-                    method: request.method || 'GET',
-                    headers: request.headers || {},
-                    body: request.body || null,
-                });
-                if (!response.ok) {
-                    throw new shaka.util.Error(
-                        shaka.util.Error.Severity.RECOVERABLE,
-                        shaka.util.Error.Category.NETWORK,
-                        shaka.util.Error.Code.BAD_HTTP_STATUS,
-                        uri, response.status, response.headers
-                    );
-                }
-                const data = await response.arrayBuffer();
-                const headers = {};
-                for (const [key, value] of response.headers.entries()) {
-                    headers[key.toLowerCase()] = value;
-                }
-                return { uri: uri, data: data, headers: headers };
-            } catch (error) {
-                if (error instanceof shaka.util.Error) throw error;
-                throw new shaka.util.Error(
-                    shaka.util.Error.Severity.RECOVERABLE,
-                    shaka.util.Error.Category.NETWORK,
-                    shaka.util.Error.Code.HTTP_ERROR,
-                    uri, error, requestType
-                );
-            }
-        }
-
         // تحويل مفاتيح DRM من Base64 إلى Hex
         function base64ToHex(str) {
             let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
@@ -258,16 +223,13 @@
 
             if (isHls || isDash) {
                 shaka.polyfill.installAll();
-                shaka.net.NetworkingEngine.registerScheme('http', puterSchemePlugin);
-                shaka.net.NetworkingEngine.registerScheme('https', puterSchemePlugin);
-
                 shakaPlayer = new shaka.Player(videoElement);
 
-                // حل مشكلة تأخير البدء لـ 6 ثوانٍ خيار بفر فوري ذكي
+                // تهيئة بفر فوري ذكي لمنع بطء التشغيل
                 shakaPlayer.configure({
                     streaming: {
-                        bufferingGoal: 8,      // الحفاظ على بفر مستقبلي مناسب
-                        rebufferingGoal: 1.5,  // تشغيل مباشر بمجرد جلب 1.5 ثانية فقط
+                        bufferingGoal: 8,      
+                        rebufferingGoal: 1.5,  
                         bufferBehind: 10
                     }
                 });
@@ -316,7 +278,6 @@
                     console.error("Manifest Load Failed Exception:", e);
                 }
             } else {
-                // الفيديوهات العادية MP4
                 videoElement.src = manifestUri;
                 plyrPlayer = new Plyr(videoElement, {
                     controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
