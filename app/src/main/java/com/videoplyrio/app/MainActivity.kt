@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -33,7 +34,6 @@ class MainActivity : AppCompatActivity() {
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
-        // إنشاء الـ WebView مع إعطائه أبعاد ملء الشاشة المطلقة برمجياً
         webView = WebView(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -56,9 +56,15 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             
+            // إلغاء تفعيل قيود استهلاك الإيماءات لبدء الفيديو وملء الشاشة ذاتياً تلقائياً
+            mediaPlaybackRequiresUserGesture = false
+            
             allowFileAccessFromFileURLs = true
             allowUniversalAccessFromFileURLs = true
         }
+
+        // تسجيل الجسر البرمجي مع جافا سكربت لإغلاق النشاط عند الطلب
+        webView.addJavascriptInterface(WebAppInterface(this), "AndroidBridge")
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -100,5 +106,13 @@ class MainActivity : AppCompatActivity() {
     private fun executePlaylistLoad(base64Data: String) {
         val cleanData = base64Data.replace("\\s".toRegex(), "")
         webView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
+    }
+}
+
+// واجهة الجسر البرمجي لاستدعاء أوامر أندرويد من متصفح WebView
+class WebAppInterface(private val activity: MainActivity) {
+    @JavascriptInterface
+    fun closeApp() {
+        activity.finishAffinity() // إغلاق التطبيق كلياً وبشكل نظيف
     }
 }
