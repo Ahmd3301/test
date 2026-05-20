@@ -6,22 +6,22 @@
     <title>مشغل الفيديو الاحترافي</title>
     
     <!-- ------------------------------------------------------------- -->
-    <!-- محاكاة بروتوكولية لـ HTML5 Picture-in-Picture في الرأس قبل تحميل Plyr لضمان تفعيل الزر الأصلي [2.1, 2.2] -->
+    <!-- المحاكاة القسرية لـ HTML5 Picture-in-Picture لفرض تفعيل وعرض زر PiP الأصلي [2.1, 2.2] -->
     <!-- ------------------------------------------------------------- -->
     <script>
+        // إعلان دعم PiP في البيئة بروتوكولياً بشكل مطلق
         Object.defineProperty(document, 'pictureInPictureEnabled', {
             get: function() { return true; },
             configurable: true
         });
 
-        if (!HTMLVideoElement.prototype.requestPictureInPicture) {
-            HTMLVideoElement.prototype.requestPictureInPicture = async function() {
-                if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
-                    window.AndroidBridge.enterPip();
-                }
-                return {};
-            };
-        }
+        // إعادة كتابة الدالة قسرياً دون قيود لتوجيه طلب التشغيل لجسر أندرويد مباشرة
+        HTMLVideoElement.prototype.requestPictureInPicture = async function() {
+            if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
+                window.AndroidBridge.enterPip();
+            }
+            return {};
+        };
 
         if (!document.exitPictureInPicture) {
             document.exitPictureInPicture = async function() {
@@ -74,13 +74,11 @@
             padding: 0 !important; /* إلغاء هوامش الأمان لملء الشاشة بالكامل خلف النوتش */
         }
 
-        /* حجب المشغل بصرياً في البداية مع انتقال سلس يخفي وميض المشغل الرمادي */
+        /* تفعيل الظهور المباشر للمشغل لعرض حلقة التحميل الدائرية الرسمية لـ Plyr تلقائياً */
         .video-player-container {
             width: 100%;
             height: 100%;
             position: relative;
-            opacity: 0; 
-            transition: opacity 0.2s ease-in-out;
         }
 
         .plyr, .plyr--video {
@@ -235,6 +233,19 @@
         let currentTitle = currentPlaylist[0].title;
         let currentIndex = 0; // تتبع الفهرس لضمان ثبات العنصر النشط بالـ Playlist بدقة
 
+        function base64ToHex(str) {
+            let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+            while (b64.length % 4 !== 0) b64 += '=';
+            const raw = window.atob(b64);
+            let hex = '';
+            for (let i = 0; i < raw.length; i++) {
+                let h = raw.charCodeAt(i).toString(16);
+                if (h.length === 1) h = '0' + h;
+                hex += h;
+            }
+            return hex;
+        }
+
         // فحص ذكي وتلقائي لتحديد هل الرابط يحتاج استخراج بالخلفية أم هو رابط بث مباشر [2.1, 2.2]
         function isExtractionTarget(url) {
             if (url.includes('##ex')) return true;
@@ -255,9 +266,6 @@
             }
             if (plyrPlayer) { plyrPlayer.stop(); }
             if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
-
-            // إخفاء الحاوية بصرياً قبل تحميل الفيديو الجديد لمنع ظهور المشغل الرمادي المؤقت
-            document.querySelector('.video-player-container').style.opacity = '0';
 
             // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
             if (isExtractionTarget(url)) {
@@ -367,14 +375,12 @@
         function initCustomUI(playerInstance) {
             playerContainer = videoElement.closest('.plyr');
 
-            // تأجيل عمليات تطويع وحقن الأزرار لتحدث داخل حدث الجاهزية لـ Plyr لضمان استقرار شريط الأدوات [1.2]
+            // تأجيل عمليات تطويع وحقن الأزرار لتحدث داخل حدث الجاهزية الرسمي لـ Plyr لضمان استقرار شريط الأدوات [1.2]
             playerInstance.on('ready', () => {
-                const controlsBar = playerContainer.querySelector('.plyr__controls');
-
                 // تطبيق فئة البعد الحالية حركياً على حاوية المشغل
                 playerContainer.classList.add(modes[currentMode]);
 
-                // 1. استنساخ وزر الـ Fullscreen وتطويعه للدوران بين أبعاد العرض الأربعة
+                // استنساخ وزر الـ Fullscreen وتطويعه للدوران بين أبعاد العرض الأربعة
                 const fsBtn = playerContainer.querySelector('[data-plyr="fullscreen"]');
                 if (fsBtn) {
                     const newFsBtn = fsBtn.cloneNode(true);
@@ -398,8 +404,6 @@
                     });
                 }
 
-                // كشف وعرض المشغل تدريجياً وبنعومة تامة فور الجاهزية التامة لتجنب أي تشوهات بصرية
-                document.querySelector('.video-player-container').style.opacity = '1';
                 playerInstance.play();
             });
 
