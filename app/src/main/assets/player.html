@@ -4,12 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>مشغل الفيديو الاحترافي</title>
-    <!-- تضمين مكتبات البث المتكيف الذكي -->
+    <!-- مكتبات البث المتكيف الذكي -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
     
-    <link href="https://cdn.plyr.io/3.4.6/plyr.css" rel="stylesheet">
-    <script src="https://cdn.plyr.io/3.4.6/plyr.js"></script>
+    <!-- ترقية Plyr إلى الإصدار المستقر 3.7.8 لضمان عمل قائمة الجودات بنجاح -->
+    <link href="https://cdn.plyr.io/3.7.8/plyr.css" rel="stylesheet">
+    <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
     <style>
         * {
             margin: 0;
@@ -21,7 +22,6 @@
             --plyr-color-main: rgba(255, 255, 255, 0.4) !important;
         }
 
-        /* حظر الألوان اللبنية وتنسيق الإعدادات الشفافة */
         .plyr--full-ui input[type=range] { color: #fff !important; }
         .plyr__control--overlaid { background: rgba(255, 255, 255, 0.15) !important; }
         .plyr--video .plyr__control.plyr__tab-focus, 
@@ -55,7 +55,6 @@
             position: relative;
         }
 
-        /* فرض تمدد المشغل لملء كامل الشاشة ومنع ظهور الحواف السوداء */
         .plyr, .plyr--video {
             width: 100% !important;
             height: 100% !important;
@@ -75,7 +74,6 @@
         .plyr.mode-square .plyr__video-wrapper { display: flex; align-items: center; justify-content: center; }
         .plyr.mode-square .plyr__video-wrapper video { width: auto; height: 80%; }
 
-        /* تنسيقات العناوين وقوائم التشغيل */
         .plyr__title {
             position: absolute;
             bottom: calc(48px + 16px);
@@ -172,8 +170,7 @@
 <body>
 
     <div class="video-player-container">
-        <!-- جعل مشغل الفيديو فارغاً افتراضياً ليتم حقنه ديناميكياً برمجياً -->
-        <video id="player" controls crossorigin playsinline></video>
+        <!-- سيتم توليد مشغل الفيديو برمجياً هنا في كل مرة لتصفير الذاكرة وتثبيت الجودات -->
     </div>
 
     <script>
@@ -190,7 +187,6 @@
         let currentMode = 0;
         const modes = ['mode-fill', 'mode-contain', 'mode-square'];
 
-        // قائمة التشغيل الافتراضية الأولية
         let currentPlaylist = [
             { title: "Video #01", src: "https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-720p.mp4" },
             { title: "Video #02", src: "https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-1080p.mp4" }
@@ -198,15 +194,15 @@
         let currentSrc = currentPlaylist[0].src;
         let currentTitle = currentPlaylist[0].title;
 
-        // تحميل البث بذكاء والتعرف على الامتدادات
         function loadStream(url) {
-            // إغلاق أي جلسات بث سابقة لتجنب تعليق الذاكرة
             if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
             if (dashInstance) { dashInstance.destroy(); dashInstance = null; }
             if (player) { player.destroy(); player = null; }
 
+            // إعادة بناء حاوية الفيديو كلياً لضمان تحديث الجودات الحركية بنجاح
+            const container = document.querySelector('.video-player-container');
+            container.innerHTML = '<video id="player" controls crossorigin playsinline></video>';
             videoElement = document.getElementById('player');
-            videoElement.src = '';
 
             const isHls = url.includes('.m3u8');
             const isDash = url.includes('.mpd');
@@ -218,11 +214,9 @@
                 hls.attachMedia(videoElement);
 
                 hls.on(Hls.Events.MANIFEST_PARSED, function () {
-                    // فرز الجودات المتوفرة تصاعدياً
                     const availableQualities = hls.levels.map((l) => l.height).filter((h, i, arr) => arr.indexOf(h) === i && h > 0);
                     availableQualities.sort((a, b) => b - a);
 
-                    // إدراج القيمة '0' لتمثيل جودة "Auto"
                     const qualities = [0, ...availableQualities];
 
                     player = new Plyr(videoElement, {
@@ -295,7 +289,6 @@
                 });
 
             } else {
-                // الفيديوهات التقليدية MP4
                 videoElement.src = url;
                 player = new Plyr(videoElement, {
                     controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
@@ -309,11 +302,9 @@
             }
         }
 
-        // بناء الواجهات والعناصر الإضافية مع تدمير وبناء المشغل الحركي
         function initCustomUI(playerInstance) {
             playerContainer = videoElement.closest('.plyr');
 
-            // إزالة أي أزرار أو عناصر مكررة قبل إضافتها
             const oldTitle = playerContainer.querySelector('.plyr__title');
             if (oldTitle) oldTitle.remove();
             const oldPlaylist = playerContainer.querySelector('.plyr__playlist');
@@ -372,13 +363,27 @@
             }
 
             playerContainer.classList.add(modes[currentMode]);
+
+            // تفعيل وضع ملء الشاشة تلقائياً فور تجهيز الفيديو وبدء التشغيل الذاتي
+            playerInstance.on('ready', () => {
+                playerInstance.play();
+                setTimeout(() => {
+                    playerInstance.fullscreen.enter();
+                }, 150);
+            });
+
+            // الاستماع لحدث الخروج من ملء الشاشة لإغلاق التطبيق تماماً
+            playerInstance.on('exitfullscreen', () => {
+                if (window.AndroidBridge && typeof window.AndroidBridge.closeApp === 'function') {
+                    window.AndroidBridge.closeApp();
+                }
+            });
         }
 
         document.addEventListener('DOMContentLoaded', () => {
             loadStream(currentSrc);
         });
 
-        // فك تشفير قوائم التشغيل واستقبالها من التطبيق
         window.loadBase64Playlist = function(base64Str) {
             try {
                 var binaryString = atob(base64Str);
