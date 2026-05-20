@@ -1,7 +1,7 @@
 package com.videoplyrio.app
 
 import android.content.Intent
-import android.content.res.Configuration // تم إضافة هذا الاستيراد لحل خطأ بناء Kotlin [1]
+import android.content.res.Configuration
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
@@ -285,7 +285,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration?) {
+    // تم تصحيح نوع المدخلات لـ Configuration ليتوافق تماماً مع توقيع الدالة الرئيسي بالنظام [1]
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         runOnUiThread {
             if (isInPictureInPictureMode) {
