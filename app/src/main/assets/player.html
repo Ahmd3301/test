@@ -5,6 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>مشغل الفيديو الاحترافي</title>
     
+    <!-- ------------------------------------------------------------- -->
+    <!-- محاكاة بروتوكولية لـ HTML5 Picture-in-Picture في الرأس قبل تحميل Plyr لضمان تفعيل الزر الأصلي [2.1, 2.2] -->
+    <!-- ------------------------------------------------------------- -->
+    <script>
+        Object.defineProperty(document, 'pictureInPictureEnabled', {
+            get: function() { return true; },
+            configurable: true
+        });
+
+        if (!HTMLVideoElement.prototype.requestPictureInPicture) {
+            HTMLVideoElement.prototype.requestPictureInPicture = async function() {
+                if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
+                    window.AndroidBridge.enterPip();
+                }
+                return {};
+            };
+        }
+
+        if (!document.exitPictureInPicture) {
+            document.exitPictureInPicture = async function() {
+                return {};
+            };
+        }
+    </script>
+    <!-- ------------------------------------------------------------- -->
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.6/shaka-player.compiled.js"></script>
     
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
@@ -48,10 +74,13 @@
             padding: 0 !important; /* إلغاء هوامش الأمان لملء الشاشة بالكامل خلف النوتش */
         }
 
+        /* حجب المشغل بصرياً في البداية مع انتقال سلس يخفي وميض المشغل الرمادي */
         .video-player-container {
             width: 100%;
             height: 100%;
             position: relative;
+            opacity: 0; 
+            transition: opacity 0.2s ease-in-out;
         }
 
         .plyr, .plyr--video {
@@ -184,30 +213,6 @@
     </div>
 
     <script>
-        // -------------------------------------------------------------
-        // محاكاة بروتوكولية لـ HTML5 Picture-in-Picture لإجبار Plyr على تفعيل وعرض زره الأصلي [2.1, 2.2]
-        // -------------------------------------------------------------
-        Object.defineProperty(document, 'pictureInPictureEnabled', {
-            get: function() { return true; },
-            configurable: true
-        });
-
-        if (!HTMLVideoElement.prototype.requestPictureInPicture) {
-            HTMLVideoElement.prototype.requestPictureInPicture = async function() {
-                if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
-                    window.AndroidBridge.enterPip();
-                }
-                return {};
-            };
-        }
-
-        if (!document.exitPictureInPicture) {
-            document.exitPictureInPicture = async function() {
-                return {};
-            };
-        }
-        // -------------------------------------------------------------
-
         let shakaPlayer = null;
         let plyrPlayer = null;
 
@@ -230,19 +235,6 @@
         let currentTitle = currentPlaylist[0].title;
         let currentIndex = 0; // تتبع الفهرس لضمان ثبات العنصر النشط بالـ Playlist بدقة
 
-        function base64ToHex(str) {
-            let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
-            while (b64.length % 4 !== 0) b64 += '=';
-            const raw = window.atob(b64);
-            let hex = '';
-            for (let i = 0; i < raw.length; i++) {
-                let h = raw.charCodeAt(i).toString(16);
-                if (h.length === 1) h = '0' + h;
-                hex += h;
-            }
-            return hex;
-        }
-
         // فحص ذكي وتلقائي لتحديد هل الرابط يحتاج استخراج بالخلفية أم هو رابط بث مباشر [2.1, 2.2]
         function isExtractionTarget(url) {
             if (url.includes('##ex')) return true;
@@ -255,7 +247,7 @@
         }
 
         async function loadStream(url) {
-            // إيقاف وكتم أي فيديو يعمل بالخلفية فوراً لمنع تسريب الصوت
+            // إيقاف وكتم أي فيديو يعمل بالخلفية فوراً لمنع تسريب الصوت والبدء من جديد
             if (videoElement) {
                 videoElement.pause();
                 videoElement.src = "";
@@ -263,6 +255,9 @@
             }
             if (plyrPlayer) { plyrPlayer.stop(); }
             if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
+
+            // إخفاء الحاوية بصرياً قبل تحميل الفيديو الجديد لمنع ظهور المشغل الرمادي المؤقت
+            document.querySelector('.video-player-container').style.opacity = '0';
 
             // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
             if (isExtractionTarget(url)) {
@@ -274,7 +269,8 @@
             }
 
             const container = document.querySelector('.video-player-container');
-            container.innerHTML = '<video id="player" controls crossorigin playsinline autoplay></video>';
+            // تم إزالة السمة "controls" الافتراضية لمنع المتصفح من رسم مشغله الرمادي البدائي
+            container.innerHTML = '<video id="player" crossorigin playsinline autoplay></video>';
             videoElement = document.getElementById('player');
 
             const hasDRM = url.includes('###');
@@ -318,7 +314,7 @@
                     const tracks = shakaPlayer.getVariantTracks();
                     const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a, b) => b - a);
 
-                    // تفعيل زر 'pip' بالإضافة إلى زر 'fullscreen' الأصلي
+                    // تفعيل زر 'pip' بالإضافة إلى زر 'fullscreen' الأصلي لـ Plyr
                     const plyrConfig = {
                         controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
                         settings: ['quality', 'speed', 'captions']
@@ -371,14 +367,14 @@
         function initCustomUI(playerInstance) {
             playerContainer = videoElement.closest('.plyr');
 
-            // تأجيل عمليات تطويع وحقن الأزرار لتحدث داخل حدث الجاهزية الرسمي لـ Plyr لضمان استقرار شريط الأدوات [1.2]
+            // تأجيل عمليات تطويع وحقن الأزرار لتحدث داخل حدث الجاهزية لـ Plyr لضمان استقرار شريط الأدوات [1.2]
             playerInstance.on('ready', () => {
                 const controlsBar = playerContainer.querySelector('.plyr__controls');
 
                 // تطبيق فئة البعد الحالية حركياً على حاوية المشغل
                 playerContainer.classList.add(modes[currentMode]);
 
-                // استنساخ وزر الـ Fullscreen وتطويعه للدوران بين أبعاد العرض الأربعة
+                // 1. استنساخ وزر الـ Fullscreen وتطويعه للدوران بين أبعاد العرض الأربعة
                 const fsBtn = playerContainer.querySelector('[data-plyr="fullscreen"]');
                 if (fsBtn) {
                     const newFsBtn = fsBtn.cloneNode(true);
@@ -401,6 +397,10 @@
                         newFsBtn.setAttribute('aria-label', labelMap[modes[currentMode]]);
                     });
                 }
+
+                // كشف وعرض المشغل تدريجياً وبنعومة تامة فور الجاهزية التامة لتجنب أي تشوهات بصرية
+                document.querySelector('.video-player-container').style.opacity = '1';
+                playerInstance.play();
             });
 
             const oldTitle = playerContainer.querySelector('.plyr__title');
@@ -446,10 +446,6 @@
                 playerContainer.classList.remove('plyr--controls-visible');
                 playerContainer.classList.remove('playlist-open');
                 isPlaylistOpen = false;
-            });
-
-            playerInstance.on('ready', () => {
-                playerInstance.play();
             });
         }
 
