@@ -62,16 +62,35 @@
             background: #000 !important;
         }
 
+        /* تصفير الانتقالات الحركية لمنع اهتزاز وانكماش الفيديو عند الإقلاع */
         .plyr__video-wrapper {
             width: 100% !important;
             height: 100% !important;
-            transition: all 0.3s ease;
         }
         
-        .plyr.mode-fill .plyr__video-wrapper video { object-fit: cover; width: 100%; height: 100%; }
-        .plyr.mode-contain .plyr__video-wrapper video { object-fit: contain; width: 100%; height: 100%; }
-        .plyr.mode-square .plyr__video-wrapper { display: flex; align-items: center; justify-content: center; }
-        .plyr.mode-square .plyr__video-wrapper video { width: auto; height: 80%; }
+        /* كود تهيئة أبعاد العرض الأربعة الذكية للتحكم */
+        .plyr.mode-contain .plyr__video-wrapper video { 
+            object-fit: contain !important; 
+            width: 100% !important; 
+            height: 100% !important; 
+        }
+        .plyr.mode-cover .plyr__video-wrapper video { 
+            object-fit: cover !important; 
+            width: 100% !important; 
+            height: 100% !important; 
+        }
+        .plyr.mode-fill .plyr__video-wrapper video { 
+            object-fit: fill !important; 
+            width: 100% !important; 
+            height: 100% !important; 
+        }
+        .plyr.mode-original .plyr__video-wrapper video { 
+            object-fit: none !important; 
+            width: auto !important; 
+            height: auto !important; 
+            max-width: 100% !important; 
+            max-height: 100% !important; 
+        }
 
         .plyr__title {
             position: absolute;
@@ -92,7 +111,6 @@
             opacity: 0;
             visibility: hidden;
             transform: translateY(10px);
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
             backdrop-filter: blur(4px);
             -webkit-backdrop-filter: blur(4px);
         }
@@ -154,18 +172,6 @@
             z-index: 10;
         }
 
-        .plyr__control--resize {
-            background: transparent !important;
-            color: #fff !important;
-            width: 32px;
-            height: 32px;
-            display: inline-flex !important;
-            align-items: center;
-            justify-content: center;
-        }
-        .plyr__control--resize::after { content: '⛶'; font-weight: 900; font-size: 19px; }
-
-        /* حاوية حلقة التحميل الصامتة المتمركزة بمنتصف الشاشة */
         .process-loop-overlay {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
@@ -190,7 +196,6 @@
 </head>
 <body>
 
-    <!-- طبقة حلقة التحميل الصامتة -->
     <div id="process-overlay" class="process-loop-overlay">
         <div class="spinner"></div>
     </div>
@@ -209,8 +214,10 @@
         let playlistElement = null;
 
         let isPlaylistOpen = false;
-        let currentMode = 0;
-        const modes = ['mode-fill', 'mode-contain', 'mode-square'];
+        
+        // الأوضاع الأربعة لتغيير الأبعاد مع تعيين الوضع الافتراضي للبدء (Contain)
+        const modes = ['mode-contain', 'mode-cover', 'mode-fill', 'mode-original'];
+        let currentMode = 0; 
 
         let currentPlaylist = [
             { title: "Video #01", src: "https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-720p.mp4" },
@@ -233,13 +240,12 @@
         }
 
         async function loadStream(url) {
-            // التحقق من تفعيل خيار الاستخراج
             if (url.includes('##ex')) {
                 const cleanUrl = url.split('##ex')[0].trim();
                 if (window.AndroidBridge && typeof window.AndroidBridge.triggerExtraction === 'function') {
                     window.AndroidBridge.triggerExtraction(cleanUrl);
                 }
-                return; // إيقاف التنفيذ والانتظار حتى يستدعي الكوتلن دالة التشغيل المستخرج
+                return;
             }
 
             if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
@@ -290,8 +296,9 @@
                     const tracks = shakaPlayer.getVariantTracks();
                     const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a, b) => b - a);
 
+                    // إعادة إدراج الـ pip في مصفوفة الـ controls
                     const plyrConfig = {
-                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
+                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
                         settings: ['quality', 'speed', 'captions']
                     };
 
@@ -313,7 +320,7 @@
             } else {
                 videoElement.src = manifestUri;
                 plyrPlayer = new Plyr(videoElement, {
-                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
+                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
                     seekTime: 10,
                     settings: ['speed', 'captions'],
                     fullscreen: { iosNative: true, video: true, container: '.plyr' },
@@ -386,32 +393,37 @@
                 isPlaylistOpen = false;
             });
 
-            const controlsBar = playerContainer.querySelector('.plyr__controls');
-            if (controlsBar) {
-                const resizeBtn = document.createElement('button');
-                resizeBtn.className = 'plyr__control plyr__control--resize';
-                controlsBar.insertBefore(resizeBtn, controlsBar.lastChild);
+            // تطبيق فئة البعد الحالية حركياً على حاوية المشغل
+            playerContainer.classList.add(modes[currentMode]);
 
-                resizeBtn.addEventListener('click', () => {
+            // استبدال كود وتطويع زر الـ Fullscreen ليقوم بعملية الدوران بين الأبعاد الأربعة [1.1, 1.2]
+            const fsBtn = playerContainer.querySelector('[data-plyr="fullscreen"]');
+            if (fsBtn) {
+                const newFsBtn = fsBtn.cloneNode(true);
+                fsBtn.parentNode.replaceChild(newFsBtn, fsBtn);
+
+                newFsBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
                     playerContainer.classList.remove(modes[currentMode]);
                     currentMode = (currentMode + 1) % modes.length;
                     playerContainer.classList.add(modes[currentMode]);
+
+                    // تحديث أداة الشرح المنبثقة للزر تزامناً مع البعد الحالي
+                    const labelMap = {
+                        'mode-contain': 'Contain',
+                        'mode-cover': 'Cover',
+                        'mode-fill': 'Stretch / Fill',
+                        'mode-original': 'Original Size'
+                    };
+                    newFsBtn.setAttribute('aria-label', labelMap[modes[currentMode]]);
                 });
             }
 
-            playerContainer.classList.add(modes[currentMode]);
-
+            // تشغيل الفيديو فوراً دون تفعيل واجهة ملء الشاشة البرمجية المزعجة لتجنب الغليتش
             playerInstance.on('ready', () => {
                 playerInstance.play();
-                setTimeout(() => {
-                    playerInstance.fullscreen.enter();
-                }, 150);
-            });
-
-            playerInstance.on('exitfullscreen', () => {
-                if (window.AndroidBridge && typeof window.AndroidBridge.closeApp === 'function') {
-                    window.AndroidBridge.closeApp();
-                }
             });
         }
 
@@ -419,7 +431,6 @@
             loadStream(currentSrc);
         });
 
-        // دوال التحكم بحلقة المعالجة الصامتة من خلال كود الكوتلن
         window.showLoadingLoop = function() {
             document.getElementById('process-overlay').style.display = 'flex';
         };
@@ -428,7 +439,6 @@
             document.getElementById('process-overlay').style.display = 'none';
         };
 
-        // دالة يتم استدعاؤها من الكوتلن فور العثور على البث المباشر المستخرج
         window.playExtractedUrl = function(url) {
             loadStream(url);
         };
