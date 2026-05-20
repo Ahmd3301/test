@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>مشغل الفيديو الاحترافي</title>
+    <!-- تضمين مكتبات البث المتكيف الذكي -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+    
     <link href="https://cdn.plyr.io/3.4.6/plyr.css" rel="stylesheet">
     <script src="https://cdn.plyr.io/3.4.6/plyr.js"></script>
     <style>
@@ -17,12 +21,9 @@
             --plyr-color-main: rgba(255, 255, 255, 0.4) !important;
         }
 
-        .plyr--full-ui input[type=range] {
-            color: #fff !important;
-        }
-        .plyr__control--overlaid {
-            background: rgba(255, 255, 255, 0.15) !important;
-        }
+        /* حظر الألوان اللبنية وتنسيق الإعدادات الشفافة */
+        .plyr--full-ui input[type=range] { color: #fff !important; }
+        .plyr__control--overlaid { background: rgba(255, 255, 255, 0.15) !important; }
         .plyr--video .plyr__control.plyr__tab-focus, 
         .plyr--video .plyr__control:hover, 
         .plyr--video .plyr__control[aria-expanded=true] {
@@ -37,12 +38,8 @@
             border: none !important;
             color: #fff !important;
         }
-        .plyr__menu__container .plyr__control {
-            color: #fff !important;
-        }
-        .plyr__menu__container [role="menuitemradio"][aria-checked="true"]::before {
-            background: #fff !important;
-        }
+        .plyr__menu__container .plyr__control { color: #fff !important; }
+        .plyr__menu__container [role="menuitemradio"][aria-checked="true"]::before { background: #fff !important; }
 
         body, html {
             width: 100%;
@@ -58,21 +55,27 @@
             position: relative;
         }
 
-        .plyr {
-            width: 100%;
-            height: 100%;
-            position: absolute;
-            background: #000;
+        /* فرض تمدد المشغل لملء كامل الشاشة ومنع ظهور الحواف السوداء */
+        .plyr, .plyr--video {
+            width: 100% !important;
+            height: 100% !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
+            background: #000 !important;
         }
 
         .plyr__video-wrapper {
+            width: 100% !important;
+            height: 100% !important;
             transition: all 0.3s ease;
         }
+        
         .plyr.mode-fill .plyr__video-wrapper video { object-fit: cover; width: 100%; height: 100%; }
         .plyr.mode-contain .plyr__video-wrapper video { object-fit: contain; width: 100%; height: 100%; }
         .plyr.mode-square .plyr__video-wrapper { display: flex; align-items: center; justify-content: center; }
         .plyr.mode-square .plyr__video-wrapper video { width: auto; height: 80%; }
 
+        /* تنسيقات العناوين وقوائم التشغيل */
         .plyr__title {
             position: absolute;
             bottom: calc(48px + 16px);
@@ -169,66 +172,177 @@
 <body>
 
     <div class="video-player-container">
-        <video controls crossorigin playsinline poster="https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-HD.jpg" id="player">
-            <source src="https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-720p.mp4" type="video/mp4" size="720">
-            <source src="https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-1080p.mp4" type="video/mp4" size="1080">
-            <track kind="captions" label="English" srclang="en" src="https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-HD.en.vtt" default>
-        </video>
+        <!-- جعل مشغل الفيديو فارغاً افتراضياً ليتم حقنه ديناميكياً برمجياً -->
+        <video id="player" controls crossorigin playsinline></video>
     </div>
 
     <script>
-        let playerContainer, videoElement, titleElement, playlistElement, isPlaylistOpen = false;
+        let player = null;
+        let hlsInstance = null;
+        let dashInstance = null;
 
-        function bindPlaylistItemClick(item) {
-            item.addEventListener('click', (e) => {
-                e.stopPropagation();
-                videoElement.src = item.getAttribute('data-src');
-                titleElement.innerHTML = item.textContent + ' <span>👍</span>';
-                const playlistItems = playlistElement.querySelectorAll('.playlist-item');
-                playlistItems.forEach(i => i.classList.remove('active'));
-                item.classList.add('active');
-                playerContainer.classList.remove('playlist-open');
-                isPlaylistOpen = false;
-                videoElement.play();
-            });
+        let playerContainer = null;
+        let videoElement = null;
+        let titleElement = null;
+        let playlistElement = null;
+
+        let isPlaylistOpen = false;
+        let currentMode = 0;
+        const modes = ['mode-fill', 'mode-contain', 'mode-square'];
+
+        // قائمة التشغيل الافتراضية الأولية
+        let currentPlaylist = [
+            { title: "Video #01", src: "https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-720p.mp4" },
+            { title: "Video #02", src: "https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-1080p.mp4" }
+        ];
+        let currentSrc = currentPlaylist[0].src;
+        let currentTitle = currentPlaylist[0].title;
+
+        // تحميل البث بذكاء والتعرف على الامتدادات
+        function loadStream(url) {
+            // إغلاق أي جلسات بث سابقة لتجنب تعليق الذاكرة
+            if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+            if (dashInstance) { dashInstance.destroy(); dashInstance = null; }
+            if (player) { player.destroy(); player = null; }
+
+            videoElement = document.getElementById('player');
+            videoElement.src = '';
+
+            const isHls = url.includes('.m3u8');
+            const isDash = url.includes('.mpd');
+
+            if (isHls && Hls.isSupported()) {
+                const hls = new Hls();
+                hlsInstance = hls;
+                hls.loadSource(url);
+                hls.attachMedia(videoElement);
+
+                hls.on(Hls.Events.MANIFEST_PARSED, function () {
+                    // فرز الجودات المتوفرة تصاعدياً
+                    const availableQualities = hls.levels.map((l) => l.height).filter((h, i, arr) => arr.indexOf(h) === i && h > 0);
+                    availableQualities.sort((a, b) => b - a);
+
+                    // إدراج القيمة '0' لتمثيل جودة "Auto"
+                    const qualities = [0, ...availableQualities];
+
+                    player = new Plyr(videoElement, {
+                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
+                        quality: {
+                            default: 0,
+                            options: qualities,
+                            forced: true,
+                            onChange: (q) => {
+                                if (q === 0) {
+                                    hls.currentLevel = -1; // Auto
+                                } else {
+                                    hls.levels.forEach((level, idx) => {
+                                        if (level.height === q) { hls.currentLevel = idx; }
+                                    });
+                                }
+                            }
+                        },
+                        i18n: { qualityLabel: { 0: 'Auto' } },
+                        seekTime: 10,
+                        settings: ['quality', 'speed', 'captions'],
+                        fullscreen: { iosNative: true, video: true, container: '.plyr' },
+                        hideControls: true,
+                        clickToPlay: false
+                    });
+                    initCustomUI(player);
+                });
+
+            } else if (isDash) {
+                const dash = dashjs.MediaPlayer().create();
+                dashInstance = dash;
+                dash.initialize(videoElement, url, true);
+
+                dash.on("streamInitialized", function () {
+                    const bitrateList = dash.getBitrateInfoListFor("video");
+                    const qualitiesMap = new Map();
+                    bitrateList.forEach(info => {
+                        if (!qualitiesMap.has(info.height) || qualitiesMap.get(info.height).bitrate < info.bitrate) {
+                            qualitiesMap.set(info.height, info);
+                        }
+                    });
+
+                    const resolutionsSorted = Array.from(qualitiesMap.keys()).sort((a, b) => b - a);
+                    const qualities = [0, ...resolutionsSorted];
+
+                    player = new Plyr(videoElement, {
+                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
+                        quality: {
+                            default: 0,
+                            options: qualities,
+                            forced: true,
+                            onChange: (q) => {
+                                if (q === 0) {
+                                    dash.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: true } } } });
+                                } else {
+                                    dash.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: false } } } });
+                                    const targetIdx = qualitiesMap.get(q).qualityIndex;
+                                    dash.setQualityFor("video", targetIdx, true);
+                                }
+                            }
+                        },
+                        i18n: { qualityLabel: { 0: 'Auto' } },
+                        seekTime: 10,
+                        settings: ['quality', 'speed', 'captions'],
+                        fullscreen: { iosNative: true, video: true, container: '.plyr' },
+                        hideControls: true,
+                        clickToPlay: false
+                    });
+                    initCustomUI(player);
+                });
+
+            } else {
+                // الفيديوهات التقليدية MP4
+                videoElement.src = url;
+                player = new Plyr(videoElement, {
+                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
+                    seekTime: 10,
+                    settings: ['speed', 'captions'],
+                    fullscreen: { iosNative: true, video: true, container: '.plyr' },
+                    hideControls: true,
+                    clickToPlay: false
+                });
+                initCustomUI(player);
+            }
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            const player = new Plyr('#player', {
-                controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
-                seekTime: 10,
-                settings: ['quality', 'speed', 'captions'],
-                fullscreen: { iosNative: true, video: true, container: '.plyr' },
-                hideControls: true,
-                clickToPlay: false
-            });
+        // بناء الواجهات والعناصر الإضافية مع تدمير وبناء المشغل الحركي
+        function initCustomUI(playerInstance) {
+            playerContainer = videoElement.closest('.plyr');
 
-            playerContainer = document.querySelector('.plyr');
-            videoElement = document.getElementById('player');
+            // إزالة أي أزرار أو عناصر مكررة قبل إضافتها
+            const oldTitle = playerContainer.querySelector('.plyr__title');
+            if (oldTitle) oldTitle.remove();
+            const oldPlaylist = playerContainer.querySelector('.plyr__playlist');
+            if (oldPlaylist) oldPlaylist.remove();
 
             titleElement = document.createElement('div');
             titleElement.className = 'plyr__title';
-            titleElement.innerHTML = 'Video player plyr.io <span>👍</span>';
+            titleElement.innerHTML = currentTitle + ' <span>👍</span>';
             playerContainer.appendChild(titleElement);
 
             playlistElement = document.createElement('div');
             playlistElement.className = 'plyr__playlist';
             playlistElement.innerHTML = `
                 <div class="playlist-wrapper">
-                    <div class="playlist-item active" data-src="https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-720p.mp4">Video #01</div>
-                    <div class="playlist-item" data-src="https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-1080p.mp4">Video #02</div>
+                    ${currentPlaylist.map((video) => `
+                        <div class="playlist-item${video.src === currentSrc ? ' active' : ''}" data-src="${video.src}">${video.title}</div>
+                    `).join('')}
                 </div>
             `;
             playerContainer.appendChild(playlistElement);
 
             const playlistItems = playlistElement.querySelectorAll('.playlist-item');
-            playlistItems.forEach(item => bindPlaylistItemClick(item));
-
-            player.on('controlsshown', () => playerContainer.classList.add('plyr--controls-visible'));
-            player.on('controlshidden', () => {
-                playerContainer.classList.remove('plyr--controls-visible');
-                playerContainer.classList.remove('playlist-open');
-                isPlaylistOpen = false;
+            playlistItems.forEach(item => {
+                item.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    currentSrc = item.getAttribute('data-src');
+                    currentTitle = item.textContent;
+                    loadStream(currentSrc);
+                });
             });
 
             titleElement.addEventListener('click', (e) => {
@@ -237,22 +351,34 @@
                 playerContainer.classList.toggle('playlist-open', isPlaylistOpen);
             });
 
-            const controlsBar = document.querySelector('.plyr__controls');
-            const resizeBtn = document.createElement('button');
-            resizeBtn.className = 'plyr__control plyr__control--resize';
-            controlsBar.insertBefore(resizeBtn, controlsBar.lastChild);
-
-            const modes = ['mode-fill', 'mode-contain', 'mode-square'];
-            let currentMode = 0;
-            resizeBtn.addEventListener('click', () => {
-                playerContainer.classList.remove(modes[currentMode]);
-                currentMode = (currentMode + 1) % modes.length;
-                playerContainer.classList.add(modes[currentMode]);
+            playerInstance.on('controlsshown', () => playerContainer.classList.add('plyr--controls-visible'));
+            playerInstance.on('controlshidden', () => {
+                playerContainer.classList.remove('plyr--controls-visible');
+                playerContainer.classList.remove('playlist-open');
+                isPlaylistOpen = false;
             });
-            playerContainer.classList.add('mode-fill');
+
+            const controlsBar = playerContainer.querySelector('.plyr__controls');
+            if (controlsBar) {
+                const resizeBtn = document.createElement('button');
+                resizeBtn.className = 'plyr__control plyr__control--resize';
+                controlsBar.insertBefore(resizeBtn, controlsBar.lastChild);
+
+                resizeBtn.addEventListener('click', () => {
+                    playerContainer.classList.remove(modes[currentMode]);
+                    currentMode = (currentMode + 1) % modes.length;
+                    playerContainer.classList.add(modes[currentMode]);
+                });
+            }
+
+            playerContainer.classList.add(modes[currentMode]);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStream(currentSrc);
         });
 
-        // فك تشفير قوائم التشغيل
+        // فك تشفير قوائم التشغيل واستقبالها من التطبيق
         window.loadBase64Playlist = function(base64Str) {
             try {
                 var binaryString = atob(base64Str);
@@ -262,22 +388,11 @@
                 var jsonStr = decodeURIComponent(percentEscaped);
                 var playlistData = JSON.parse(jsonStr);
 
-                var wrapper = playlistElement.querySelector('.playlist-wrapper');
-                wrapper.innerHTML = '';
-
-                playlistData.forEach(function(video, index) {
-                    var item = document.createElement('div');
-                    item.className = 'playlist-item' + (index === 0 ? ' active' : '');
-                    item.setAttribute('data-src', video.src);
-                    item.textContent = video.title;
-                    wrapper.appendChild(item);
-                    bindPlaylistItemClick(item);
-                });
-
-                if (playlistData.length > 0) {
-                    videoElement.src = playlistData[0].src;
-                    titleElement.innerHTML = playlistData[0].title + ' <span>👍</span>';
-                    videoElement.play();
+                if (playlistData && playlistData.length > 0) {
+                    currentPlaylist = playlistData;
+                    currentSrc = playlistData[0].src;
+                    currentTitle = playlistData[0].title;
+                    loadStream(currentSrc);
                 }
             } catch (e) {
                 console.error("Error loading playlist:", e);
