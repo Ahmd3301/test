@@ -21,13 +21,11 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // تفعيل العرض الكامل خلف النوتش
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.attributes.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
 
-        // تفعيل الوضع الغامر وإخفاء أشرطة النظام
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         controller.hide(WindowInsetsCompat.Type.systemBars())
@@ -49,7 +47,6 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             
-            // تجاوز قيود CORS للملفات المحلية
             allowFileAccessFromFileURLs = true
             allowUniversalAccessFromFileURLs = true
         }
@@ -92,7 +89,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executePlaylistLoad(base64Data: String) {
-        // إزالة الفراغات والرموز غير المرغوبة
         val cleanData = base64Data.replace("\\s".toRegex(), "")
         webView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null) [3.1]
     }
