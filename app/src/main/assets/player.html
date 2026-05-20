@@ -62,13 +62,11 @@
             background: #000 !important;
         }
 
-        /* تصفير الانتقالات الحركية لمنع اهتزاز وانكماش الفيديو عند الإقلاع */
         .plyr__video-wrapper {
             width: 100% !important;
             height: 100% !important;
         }
         
-        /* كود تهيئة أبعاد العرض الأربعة الذكية للتحكم */
         .plyr.mode-contain .plyr__video-wrapper video { 
             object-fit: contain !important; 
             width: 100% !important; 
@@ -90,6 +88,12 @@
             height: auto !important; 
             max-width: 100% !important; 
             max-height: 100% !important; 
+        }
+
+        /* كود إخفاء عناصر التحكم كلياً عند الدخول بوضع صورة داخل صورة PiP */
+        .plyr--pip-active .plyr__controls, 
+        .plyr--pip-active .plyr__title {
+            display: none !important;
         }
 
         .plyr__title {
@@ -215,9 +219,9 @@
 
         let isPlaylistOpen = false;
         
-        // الأوضاع الأربعة لتغيير الأبعاد مع تعيين الوضع الافتراضي للبدء (Contain)
+        // جعل التطبيق يفتح دائماً وبشكل تلقائي على وضع Stretch / Fill
         const modes = ['mode-contain', 'mode-cover', 'mode-fill', 'mode-original'];
-        let currentMode = 0; 
+        let currentMode = 2; // فهرس رقم 2 يمثل وضع Stretch / Fill
 
         let currentPlaylist = [
             { title: "Video #01", src: "https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-720p.mp4" },
@@ -240,16 +244,23 @@
         }
 
         async function loadStream(url) {
+            // إيقاف وكتم أي صوت يعمل بالخلفية فوراً قبل الاستدعاء [2.1, 2.2]
+            if (videoElement) {
+                videoElement.pause();
+                videoElement.src = "";
+                try { videoElement.load(); } catch(e){}
+            }
+            if (plyrPlayer) { plyrPlayer.stop(); }
+            if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
+
             if (url.includes('##ex')) {
                 const cleanUrl = url.split('##ex')[0].trim();
+                window.showLoadingLoop();
                 if (window.AndroidBridge && typeof window.AndroidBridge.triggerExtraction === 'function') {
                     window.AndroidBridge.triggerExtraction(cleanUrl);
                 }
                 return;
             }
-
-            if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
-            if (plyrPlayer) { plyrPlayer.destroy(); plyrPlayer = null; }
 
             const container = document.querySelector('.video-player-container');
             container.innerHTML = '<video id="player" controls crossorigin playsinline autoplay></video>';
@@ -296,7 +307,6 @@
                     const tracks = shakaPlayer.getVariantTracks();
                     const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a, b) => b - a);
 
-                    // إعادة إدراج الـ pip في مصفوفة الـ controls
                     const plyrConfig = {
                         controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
                         settings: ['quality', 'speed', 'captions']
@@ -393,10 +403,9 @@
                 isPlaylistOpen = false;
             });
 
-            // تطبيق فئة البعد الحالية حركياً على حاوية المشغل
             playerContainer.classList.add(modes[currentMode]);
 
-            // استبدال كود وتطويع زر الـ Fullscreen ليقوم بعملية الدوران بين الأبعاد الأربعة [1.1, 1.2]
+            // تطويع واستبدال زر الـ Fullscreen ليقوم بعملية الدوران بين الأبعاد الأربعة
             const fsBtn = playerContainer.querySelector('[data-plyr="fullscreen"]');
             if (fsBtn) {
                 const newFsBtn = fsBtn.cloneNode(true);
@@ -410,7 +419,6 @@
                     currentMode = (currentMode + 1) % modes.length;
                     playerContainer.classList.add(modes[currentMode]);
 
-                    // تحديث أداة الشرح المنبثقة للزر تزامناً مع البعد الحالي
                     const labelMap = {
                         'mode-contain': 'Contain',
                         'mode-cover': 'Cover',
@@ -421,14 +429,35 @@
                 });
             }
 
-            // تشغيل الفيديو فوراً دون تفعيل واجهة ملء الشاشة البرمجية المزعجة لتجنب الغليتش
+            // ربط زر الـ PiP المدمج بجسر أندرويد البرمجي ليعمل بشكل أصلي [2.1, 2.2]
+            const pipBtn = playerContainer.querySelector('[data-plyr="pip"]');
+            if (pipBtn) {
+                const newPipBtn = pipBtn.cloneNode(true);
+                pipBtn.parentNode.replaceChild(newPipBtn, pipBtn);
+
+                newPipBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
+                        window.AndroidBridge.enterPip();
+                    }
+                });
+            }
+
             playerInstance.on('ready', () => {
                 playerInstance.play();
             });
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            loadStream(currentSrc);
+            const urlParams = new URLSearchParams(window.location.search);
+            const isDeeplink = urlParams.get('deeplink') === 'true';
+            
+            if (!isDeeplink) {
+                loadStream(currentSrc); // تشغيل الفيديو الافتراضي في حالة فتح التطبيق بشكل مباشر فقط
+            } else {
+                window.showLoadingLoop(); // كتم وعرض شاشة الانتظار فوراً عند الفتح برابط خارجي لمنع تسريب الصوت
+            }
         });
 
         window.showLoadingLoop = function() {
