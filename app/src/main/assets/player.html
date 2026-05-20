@@ -252,10 +252,9 @@
             playerContainer.classList.add('mode-fill');
         });
 
-        // دالة استقبال وفك تشفير قوائم التشغيل
+        // فك تشفير قوائم التشغيل
         window.loadBase64Playlist = function(base64Str) {
             try {
-                // فك تشفير UTF-8 يدعم الحروف العربية بدقة [2.1, 2.2]
                 var binaryString = atob(base64Str);
                 var percentEscaped = binaryString.split('').map(function(c) {
                     return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
@@ -286,4 +285,4 @@
         };
     </script>
 </body>
-  </html>
+</html>
