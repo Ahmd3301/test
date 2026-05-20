@@ -4,13 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>مشغل الفيديو الاحترافي</title>
-    <!-- مكتبات البث المتكيف الذكي -->
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-    <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
     
-    <!-- ترقية Plyr إلى الإصدار المستقر 3.7.8 لضمان عمل قائمة الجودات بنجاح -->
-    <link href="https://cdn.plyr.io/3.7.8/plyr.css" rel="stylesheet">
-    <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
+    <!-- تضمين مكتبات تخطي CORS ومحرك Shaka Player المتطور -->
+    <script src="https://js.puter.com/v2/"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.6/shaka-player.compiled.js"></script>
+    
+    <!-- تضمين واجهة Plyr الحديثة والمستقرة -->
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+    <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+    
     <style>
         * {
             margin: 0;
@@ -170,13 +172,12 @@
 <body>
 
     <div class="video-player-container">
-        <!-- سيتم توليد مشغل الفيديو برمجياً هنا في كل مرة لتصفير الذاكرة وتثبيت الجودات -->
+        <!-- تصفير الحاوية ديناميكياً لتحديث الجودات -->
     </div>
 
     <script>
-        let player = null;
-        let hlsInstance = null;
-        let dashInstance = null;
+        let shakaPlayer = null;
+        let plyrPlayer = null;
 
         let playerContainer = null;
         let videoElement = null;
@@ -194,103 +195,130 @@
         let currentSrc = currentPlaylist[0].src;
         let currentTitle = currentPlaylist[0].title;
 
-        function loadStream(url) {
-            if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-            if (dashInstance) { dashInstance.destroy(); dashInstance = null; }
-            if (player) { player.destroy(); player = null; }
+        // دالة تجاوز قيود CORS عبر وكيل Puter السحابي
+        async function puterSchemePlugin(uri, request, requestType) {
+            try {
+                const response = await puter.net.fetch(uri, {
+                    method: request.method || 'GET',
+                    headers: request.headers || {},
+                    body: request.body || null,
+                });
+                if (!response.ok) {
+                    throw new shaka.util.Error(
+                        shaka.util.Error.Severity.RECOVERABLE,
+                        shaka.util.Error.Category.NETWORK,
+                        shaka.util.Error.Code.BAD_HTTP_STATUS,
+                        uri, response.status, response.headers
+                    );
+                }
+                const data = await response.arrayBuffer();
+                const headers = {};
+                for (const [key, value] of response.headers.entries()) {
+                    headers[key.toLowerCase()] = value;
+                }
+                return { uri: uri, data: data, headers: headers };
+            } catch (error) {
+                if (error instanceof shaka.util.Error) throw error;
+                throw new shaka.util.Error(
+                    shaka.util.Error.Severity.RECOVERABLE,
+                    shaka.util.Error.Category.NETWORK,
+                    shaka.util.Error.Code.HTTP_ERROR,
+                    uri, error, requestType
+                );
+            }
+        }
 
-            // إعادة بناء حاوية الفيديو كلياً لضمان تحديث الجودات الحركية بنجاح
+        // تحويل مفاتيح DRM من Base64 إلى Hex
+        function base64ToHex(str) {
+            let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+            while (b64.length % 4 !== 0) b64 += '=';
+            const raw = window.atob(b64);
+            let hex = '';
+            for (let i = 0; i < raw.length; i++) {
+                let h = raw.charCodeAt(i).toString(16);
+                if (h.length === 1) h = '0' + h;
+                hex += h;
+            }
+            return hex;
+        }
+
+        async function loadStream(url) {
+            if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
+            if (plyrPlayer) { plyrPlayer.destroy(); plyrPlayer = null; }
+
             const container = document.querySelector('.video-player-container');
-            container.innerHTML = '<video id="player" controls crossorigin playsinline></video>';
+            container.innerHTML = '<video id="player" controls crossorigin playsinline autoplay></video>';
             videoElement = document.getElementById('player');
 
-            const isHls = url.includes('.m3u8');
-            const isDash = url.includes('.mpd');
+            const hasDRM = url.includes('###');
+            const manifestUri = hasDRM ? url.split('###')[0].trim() : url;
 
-            if (isHls && Hls.isSupported()) {
-                const hls = new Hls();
-                hlsInstance = hls;
-                hls.loadSource(url);
-                hls.attachMedia(videoElement);
+            const isHls = manifestUri.includes('.m3u8');
+            const isDash = manifestUri.includes('.mpd');
 
-                hls.on(Hls.Events.MANIFEST_PARSED, function () {
-                    const availableQualities = hls.levels.map((l) => l.height).filter((h, i, arr) => arr.indexOf(h) === i && h > 0);
-                    availableQualities.sort((a, b) => b - a);
+            if (isHls || isDash) {
+                shaka.polyfill.installAll();
+                shaka.net.NetworkingEngine.registerScheme('http', puterSchemePlugin);
+                shaka.net.NetworkingEngine.registerScheme('https', puterSchemePlugin);
 
-                    const qualities = [0, ...availableQualities];
+                shakaPlayer = new shaka.Player(videoElement);
 
-                    player = new Plyr(videoElement, {
-                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
-                        quality: {
-                            default: 0,
-                            options: qualities,
-                            forced: true,
-                            onChange: (q) => {
-                                if (q === 0) {
-                                    hls.currentLevel = -1; // Auto
-                                } else {
-                                    hls.levels.forEach((level, idx) => {
-                                        if (level.height === q) { hls.currentLevel = idx; }
-                                    });
-                                }
-                            }
-                        },
-                        i18n: { qualityLabel: { 0: 'Auto' } },
-                        seekTime: 10,
-                        settings: ['quality', 'speed', 'captions'],
-                        fullscreen: { iosNative: true, video: true, container: '.plyr' },
-                        hideControls: true,
-                        clickToPlay: false
-                    });
-                    initCustomUI(player);
+                // حل مشكلة تأخير البدء لـ 6 ثوانٍ خيار بفر فوري ذكي
+                shakaPlayer.configure({
+                    streaming: {
+                        bufferingGoal: 8,      // الحفاظ على بفر مستقبلي مناسب
+                        rebufferingGoal: 1.5,  // تشغيل مباشر بمجرد جلب 1.5 ثانية فقط
+                        bufferBehind: 10
+                    }
                 });
 
-            } else if (isDash) {
-                const dash = dashjs.MediaPlayer().create();
-                dashInstance = dash;
-                dash.initialize(videoElement, url, true);
+                if (hasDRM) {
+                    try {
+                        const keyParts = url.split('###')[1].split(':');
+                        shakaPlayer.configure({
+                            drm: { clearKeys: { [base64ToHex(keyParts[1].trim())]: base64ToHex(keyParts[0].trim()) } }
+                        });
+                    } catch (err) {
+                        console.error("DRM Config Error:", err);
+                    }
+                } else {
+                    shakaPlayer.configure({ drm: {} });
+                }
 
-                dash.on("streamInitialized", function () {
-                    const bitrateList = dash.getBitrateInfoListFor("video");
-                    const qualitiesMap = new Map();
-                    bitrateList.forEach(info => {
-                        if (!qualitiesMap.has(info.height) || qualitiesMap.get(info.height).bitrate < info.bitrate) {
-                            qualitiesMap.set(info.height, info);
-                        }
-                    });
+                try {
+                    let mimeType = null;
+                    if (isDash) { mimeType = 'application/dash+xml'; }
+                    else if (isHls) { mimeType = 'application/x-mpegurl'; }
 
-                    const resolutionsSorted = Array.from(qualitiesMap.keys()).sort((a, b) => b - a);
-                    const qualities = [0, ...resolutionsSorted];
+                    await shakaPlayer.load(manifestUri, null, mimeType);
 
-                    player = new Plyr(videoElement, {
+                    const tracks = shakaPlayer.getVariantTracks();
+                    const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a, b) => b - a);
+
+                    const plyrConfig = {
                         controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
-                        quality: {
-                            default: 0,
-                            options: qualities,
-                            forced: true,
-                            onChange: (q) => {
-                                if (q === 0) {
-                                    dash.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: true } } } });
-                                } else {
-                                    dash.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: false } } } });
-                                    const targetIdx = qualitiesMap.get(q).qualityIndex;
-                                    dash.setQualityFor("video", targetIdx, true);
-                                }
-                            }
-                        },
-                        i18n: { qualityLabel: { 0: 'Auto' } },
-                        seekTime: 10,
-                        settings: ['quality', 'speed', 'captions'],
-                        fullscreen: { iosNative: true, video: true, container: '.plyr' },
-                        hideControls: true,
-                        clickToPlay: false
-                    });
-                    initCustomUI(player);
-                });
+                        settings: ['quality', 'speed', 'captions']
+                    };
 
+                    if (heights.length > 0) {
+                        plyrConfig.quality = {
+                            default: 'auto',
+                            options: ['auto', ...heights],
+                            forced: true,
+                            onChange: (q) => applyQuality(q)
+                        };
+                    }
+
+                    plyrPlayer = new Plyr(videoElement, plyrConfig);
+                    initCustomUI(plyrPlayer);
+
+                } catch (e) {
+                    console.error("Manifest Load Failed Exception:", e);
+                }
             } else {
-                videoElement.src = url;
-                player = new Plyr(videoElement, {
+                // الفيديوهات العادية MP4
+                videoElement.src = manifestUri;
+                plyrPlayer = new Plyr(videoElement, {
                     controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
                     seekTime: 10,
                     settings: ['speed', 'captions'],
@@ -298,7 +326,22 @@
                     hideControls: true,
                     clickToPlay: false
                 });
-                initCustomUI(player);
+                initCustomUI(plyrPlayer);
+            }
+        }
+
+        function applyQuality(q) {
+            if (!shakaPlayer) return;
+            if (q === 'auto' || q === 0) {
+                shakaPlayer.configure({ abr: { enabled: true } });
+            } else {
+                shakaPlayer.configure({ abr: { enabled: false } });
+                const targetHeight = Number(q);
+                const tracksFound = shakaPlayer.getVariantTracks().filter(t => t.height === targetHeight);
+                if (tracksFound.length > 0) {
+                    const bestTrack = tracksFound.sort((a, b) => b.bandwidth - a.bandwidth)[0];
+                    shakaPlayer.selectVariantTrack(bestTrack, true);
+                }
             }
         }
 
@@ -364,7 +407,6 @@
 
             playerContainer.classList.add(modes[currentMode]);
 
-            // تفعيل وضع ملء الشاشة تلقائياً فور تجهيز الفيديو وبدء التشغيل الذاتي
             playerInstance.on('ready', () => {
                 playerInstance.play();
                 setTimeout(() => {
@@ -372,7 +414,6 @@
                 }, 150);
             });
 
-            // الاستماع لحدث الخروج من ملء الشاشة لإغلاق التطبيق تماماً
             playerInstance.on('exitfullscreen', () => {
                 if (window.AndroidBridge && typeof window.AndroidBridge.closeApp === 'function') {
                     window.AndroidBridge.closeApp();
