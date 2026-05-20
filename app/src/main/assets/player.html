@@ -5,9 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>مشغل الفيديو الاحترافي</title>
     
-    <!-- استخدام المحركات الأصيلة والمستقرة Dash.js و Hls.js لضمان تخطي حظر MBC و EdgeNext ومشاكل الـ CORS -->
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-    <script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.6/shaka-player.compiled.js"></script>
     
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
@@ -47,7 +45,7 @@
             height: 100%;
             background: #000;
             overflow: hidden;
-            padding: 0 !important; /* ملء كامل الشاشة وإخفاء أي حواف سوداء */
+            padding: 0 !important; /* إلغاء هوامش الأمان لملء الشاشة بالكامل خلف النوتش */
         }
 
         .video-player-container {
@@ -186,27 +184,32 @@
     </div>
 
     <script>
-        // الخدعة البرمجية (Polyfill) المتقدمة لتخطي قيود القراءة فقط في المتصفح وإجبار Plyr على إظهار زر الـ PiP الأصلي للمشغل بكامل ثيمه [1.2]
+        // -------------------------------------------------------------
+        // محاكاة بروتوكولية لـ HTML5 Picture-in-Picture لإجبار Plyr على تفعيل وعرض زره الأصلي [2.1, 2.2]
+        // -------------------------------------------------------------
         Object.defineProperty(document, 'pictureInPictureEnabled', {
             get: function() { return true; },
             configurable: true
         });
 
-        HTMLVideoElement.prototype.requestPictureInPicture = async function() {
-            if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
-                window.AndroidBridge.enterPip();
-            }
-            return {};
-        };
+        if (!HTMLVideoElement.prototype.requestPictureInPicture) {
+            HTMLVideoElement.prototype.requestPictureInPicture = async function() {
+                if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
+                    window.AndroidBridge.enterPip();
+                }
+                return {};
+            };
+        }
 
-        document.exitPictureInPicture = async function() {
-            return {};
-        };
+        if (!document.exitPictureInPicture) {
+            document.exitPictureInPicture = async function() {
+                return {};
+            };
+        }
+        // -------------------------------------------------------------
 
         let shakaPlayer = null;
         let plyrPlayer = null;
-        let hlsInstance = null;
-        let dashInstance = null;
 
         let playerContainer = null;
         let videoElement = null;
@@ -227,18 +230,6 @@
         let currentTitle = currentPlaylist[0].title;
         let currentIndex = 0; // تتبع الفهرس لضمان ثبات العنصر النشط بالـ Playlist بدقة
 
-        // فحص ذكي وتلقائي لتحديد هل الرابط يحتاج استخراج بالخلفية أم هو رابط بث مباشر [2.1, 2.2]
-        function isExtractionTarget(url) {
-            if (url.includes('##ex')) return true;
-            const cleanUrl = url.split('###')[0].split('?')[0].toLowerCase();
-            // الفحص التلقائي لروابط فاصل إعلاني في الـ Playlist بدون وجود وسم يدوياً لكل رابط
-            if (cleanUrl.includes('fasel') && !cleanUrl.endsWith('.m3u8') && !cleanUrl.endsWith('.mpd') && !cleanUrl.endsWith('.mp4')) {
-                return true;
-            }
-            return false;
-        }
-
-        // تحويل مفاتيح DRM من Base64 إلى Hex
         function base64ToHex(str) {
             let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
             while (b64.length % 4 !== 0) b64 += '=';
@@ -252,6 +243,17 @@
             return hex;
         }
 
+        // فحص ذكي وتلقائي لتحديد هل الرابط يحتاج استخراج بالخلفية أم هو رابط بث مباشر [2.1, 2.2]
+        function isExtractionTarget(url) {
+            if (url.includes('##ex')) return true;
+            const cleanUrl = url.split('###')[0].split('?')[0].toLowerCase();
+            // الفحص التلقائي لروابط فاصل إعلاني في الـ Playlist بدون وجود وسم يدوياً لكل رابط
+            if (cleanUrl.includes('fasel') && !cleanUrl.endsWith('.m3u8') && !cleanUrl.endsWith('.mpd') && !cleanUrl.endsWith('.mp4')) {
+                return true;
+            }
+            return false;
+        }
+
         async function loadStream(url) {
             // إيقاف وكتم أي فيديو يعمل بالخلفية فوراً لمنع تسريب الصوت
             if (videoElement) {
@@ -259,11 +261,10 @@
                 videoElement.src = "";
                 try { videoElement.load(); } catch(e){}
             }
-            if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
-            if (dashInstance) { dashInstance.destroy(); dashInstance = null; }
-            if (plyrPlayer) { plyrPlayer.destroy(); plyrPlayer = null; }
+            if (plyrPlayer) { plyrPlayer.stop(); }
+            if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
 
-            // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج بالخلفية
+            // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
             if (isExtractionTarget(url)) {
                 const cleanUrl = url.split('##ex')[0].trim();
                 if (window.AndroidBridge && typeof window.AndroidBridge.triggerExtraction === 'function') {
@@ -282,112 +283,62 @@
             const isHls = manifestUri.includes('.m3u8');
             const isDash = manifestUri.includes('.mpd');
 
-            if (isHls) {
-                // تفعيل التخزين المسبق الممتد لـ دقيقة كاملة (60 ثانية) لتجنب انقطاع البث
-                const hls = new Hls({
-                    maxBufferLength: 60,       // تخزين 60 ثانية مسبقاً لمقاومة تقلب الإنترنت [5.1]
-                    maxMaxBufferLength: 60,
-                    lowLatencyMode: true       // تقليل وقت التأخير لبدء التشغيل الفوري
-                });
-                hlsInstance = hls;
-                hls.loadSource(manifestUri);
-                hls.attachMedia(videoElement);
+            if (isHls || isDash) {
+                shaka.polyfill.installAll();
+                shakaPlayer = new shaka.Player(videoElement);
 
-                hls.on(Hls.Events.MANIFEST_PARSED, function () {
-                    const availableQualities = hls.levels.map((l) => l.height).filter((h, i, arr) => arr.indexOf(h) === i && h > 0);
-                    availableQualities.sort((a, b) => b - a);
-                    const qualities = [0, ...availableQualities];
-
-                    plyrPlayer = new Plyr(videoElement, {
-                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
-                        quality: {
-                            default: 0,
-                            options: qualities,
-                            forced: true,
-                            onChange: (q) => {
-                                if (q === 0) {
-                                    hls.currentLevel = -1; // Auto
-                                } else {
-                                    hls.levels.forEach((level, idx) => {
-                                        if (level.height === q) { hls.currentLevel = idx; }
-                                    });
-                                }
-                            }
-                        },
-                        i18n: { qualityLabel: { 0: 'Auto' } },
-                        settings: ['quality', 'speed', 'captions']
-                    });
-                    initCustomUI(plyrPlayer);
-                });
-
-            } else if (isDash) {
-                const dash = dashjs.MediaPlayer().create();
-                dashInstance = dash;
-
-                // حقن وتفعيل مفاتيح فك تشفير الـ ClearKey DRM الأصلية لـ Dash.js دون حظر [5.2]
-                if (hasDRM) {
-                    const keyParts = url.split('###')[1].split(':');
-                    const keyIdHex = base64ToHex(keyParts[0].trim());
-                    const keyHex = base64ToHex(keyParts[1].trim());
-
-                    dash.setProtectionData({
-                        "org.w3.clearkey": {
-                            "clearkeys": {
-                                [keyIdHex]: keyHex
-                            }
-                        }
-                    });
-                }
-
-                dash.initialize(videoElement, manifestUri, true);
-
-                // ميزة التخزين المسبق لـ دقيقة كاملة (60 ثانية) لتجنب انقطاع البث في Dash.js [5.2]
-                dash.updateSettings({
+                shakaPlayer.configure({
                     streaming: {
-                        buffer: {
-                            stableBufferTime: 60, // البقاء بـ بفر آمن مدته 60 ثانية بالخلفية
-                            bufferTimeAtTopQuality: 60
-                        },
-                        abr: {
-                            autoSwitchBitrate: { video: true }
-                        }
+                        bufferingGoal: 8,      
+                        rebufferingGoal: 1.5,  
+                        bufferBehind: 10
                     }
                 });
 
-                dash.on("streamInitialized", function () {
-                    const bitrateList = dash.getBitrateInfoListFor("video");
-                    const qualitiesMap = new Map();
-                    bitrateList.forEach(info => {
-                        if (!qualitiesMap.has(info.height) || qualitiesMap.get(info.height).bitrate < info.bitrate) {
-                            qualitiesMap.set(info.height, info);
-                        }
-                    });
+                if (hasDRM) {
+                    try {
+                        const keyParts = url.split('###')[1].split(':');
+                        shakaPlayer.configure({
+                            drm: { clearKeys: { [base64ToHex(keyParts[1].trim())]: base64ToHex(keyParts[0].trim()) } }
+                        });
+                    } catch (err) {
+                        console.error("DRM Config Error:", err);
+                    }
+                } else {
+                    shakaPlayer.configure({ drm: {} });
+                }
 
-                    const resolutionsSorted = Array.from(qualitiesMap.keys()).sort((a, b) => b - a);
-                    const qualities = [0, ...resolutionsSorted];
+                try {
+                    let mimeType = null;
+                    if (isDash) { mimeType = 'application/dash+xml'; }
+                    else if (isHls) { mimeType = 'application/x-mpegurl'; }
 
-                    plyrPlayer = new Plyr(videoElement, {
+                    await shakaPlayer.load(manifestUri, null, mimeType);
+
+                    const tracks = shakaPlayer.getVariantTracks();
+                    const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a, b) => b - a);
+
+                    // تفعيل زر 'pip' بالإضافة إلى زر 'fullscreen' الأصلي
+                    const plyrConfig = {
                         controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
-                        quality: {
-                            default: 0,
-                            options: qualities,
-                            forced: true,
-                            onChange: (q) => {
-                                if (q === 0) {
-                                    dash.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: true } } } });
-                                } else {
-                                    dash.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: false } } } });
-                                    const targetIdx = qualitiesMap.get(q).qualityIndex;
-                                    dash.setQualityFor("video", targetIdx, true);
-                                }
-                            }
-                        },
-                        i18n: { qualityLabel: { 0: 'Auto' } },
                         settings: ['quality', 'speed', 'captions']
-                    });
-                    initCustomUI(plyrPlayer);
-                });
+                    };
 
+                    if (heights.length > 0) {
+                        plyrConfig.quality = {
+                            default: 'auto',
+                            options: ['auto', ...heights],
+                            forced: true,
+                            onChange: (q) => applyQuality(q)
+                        };
+                    }
+
+                    plyrPlayer = new Plyr(videoElement, plyrConfig);
+                    initCustomUI(plyrPlayer);
+
+                } catch (e) {
+                    console.error("Manifest Load Failed Exception:", e);
+                }
             } else {
                 videoElement.src = manifestUri;
                 plyrPlayer = new Plyr(videoElement, {
@@ -402,11 +353,29 @@
             }
         }
 
+        function applyQuality(q) {
+            if (!shakaPlayer) return;
+            if (q === 'auto' || q === 0) {
+                shakaPlayer.configure({ abr: { enabled: true } });
+            } else {
+                shakaPlayer.configure({ abr: { enabled: false } });
+                const targetHeight = Number(q);
+                const tracksFound = shakaPlayer.getVariantTracks().filter(t => t.height === targetHeight);
+                if (tracksFound.length > 0) {
+                    const bestTrack = tracksFound.sort((a, b) => b.bandwidth - a.bandwidth)[0];
+                    shakaPlayer.selectVariantTrack(bestTrack, true);
+                }
+            }
+        }
+
         function initCustomUI(playerInstance) {
             playerContainer = videoElement.closest('.plyr');
 
-            // تأجيل عمليات تطويع الأزرار لتحدث داخل حدث الجاهزية لـ Plyr لضمان ظهور زر Fullscreen وزر PiP الأصلي [1.2]
+            // تأجيل عمليات تطويع وحقن الأزرار لتحدث داخل حدث الجاهزية الرسمي لـ Plyr لضمان استقرار شريط الأدوات [1.2]
             playerInstance.on('ready', () => {
+                const controlsBar = playerContainer.querySelector('.plyr__controls');
+
+                // تطبيق فئة البعد الحالية حركياً على حاوية المشغل
                 playerContainer.classList.add(modes[currentMode]);
 
                 // استنساخ وزر الـ Fullscreen وتطويعه للدوران بين أبعاد العرض الأربعة
@@ -481,8 +450,6 @@
 
             playerInstance.on('ready', () => {
                 playerInstance.play();
-                // فرض معدل السرعة الطبيعي دائماً فور جاهزية البث
-                playerInstance.speed = 1.0; 
             });
         }
 
@@ -495,7 +462,7 @@
             }
         });
 
-        // دوال وهمية للمحافظة على التوافق مع نداءات الكوتلن دون إطلاق أي واجهة سوداء للاستخراج الصامت
+        // دوال وهمية فارغة للمحافظة على التوافق التام مع نداءات الكوتلن دون استخدام شاشات انتظار سوداء
         window.showLoadingLoop = function() {};
         window.hideLoadingLoop = function() {};
 
