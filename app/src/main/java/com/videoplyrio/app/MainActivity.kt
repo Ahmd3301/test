@@ -1,6 +1,7 @@
 package com.videoplyrio.app
 
 import android.content.Intent
+import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -8,6 +9,7 @@ import android.os.Looper
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
+import android.webkit.SslErrorHandler
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -109,14 +111,12 @@ class MainActivity : AppCompatActivity() {
         mainWebView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
     }
 
-    // إجبار عملية التحليل والاستخراج بالخلفية لتعمل على خيط المعالجة الرئيسي (UI Thread) لمنع الانهيار [1]
     fun startBackgroundExtraction(mainUrl: String) {
         runOnUiThread {
             mainWebView.evaluateJavascript("window.showLoadingLoop()", null)
 
             stopExtraction()
 
-            // تهيئة متصفح الخلفية بأمان على خيط المعالجة الرئيسي [1]
             extractorWebView = WebView(this@MainActivity).apply {
                 settings.apply {
                     javaScriptEnabled = true
@@ -130,10 +130,14 @@ class MainActivity : AppCompatActivity() {
             extraHeaders["Referer"] = "https://faselhd.center/"
 
             extractorWebView?.webViewClient = object : WebViewClient() {
+                // تجاوز تحذيرات وأخطاء شهادات الأمان (SSL Errors) برمجياً لمنع تعليق التصفح [1]
+                override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                    handler?.proceed()
+                }
+
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
 
-                    // الخطوة الأولى: استخراج رابط مشغل الـ Iframe من صفحة الويب
                     val jsGetIframe = """
                         (function() {
                             var firstLi = document.querySelector('li[onclick*="player_iframe.location.href"]');
@@ -150,9 +154,8 @@ class MainActivity : AppCompatActivity() {
                         val cleanIframeUrl = iframeUrl?.replace("\"", "")?.trim()
                         if (!cleanIframeUrl.isNullOrEmpty() && cleanIframeUrl != "null") {
                             loadIframeAndExtractM3u8(cleanIframeUrl)
-                        } else {
-                            cancelLoadingLoop()
                         }
+                        // تم حذف شرط الإلغاء الفوري (cancelLoadingLoop) لمنع إجهاض الاستخراج أثناء تداخل التحويلات [1]
                     }
                 }
             }
@@ -167,6 +170,10 @@ class MainActivity : AppCompatActivity() {
             extraHeaders["Referer"] = "https://faselhd.center/"
 
             extractorWebView?.webViewClient = object : WebViewClient() {
+                override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                    handler?.proceed()
+                }
+
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     startPollingForM3u8()
@@ -208,7 +215,7 @@ class MainActivity : AppCompatActivity() {
         }
         pollingRunnable?.let { handler.post(it) }
 
-        // وقت أقصى للاستجابة (12 ثانية) لمنع الاستهلاك اللانهائي في حال تعثر الخادم
+        // وقت انتظار أقصى (12 ثانية) كحماية نهائية لإغلاق التحميل عند الفشل التام
         handler.postDelayed({
             runOnUiThread {
                 stopExtraction()
