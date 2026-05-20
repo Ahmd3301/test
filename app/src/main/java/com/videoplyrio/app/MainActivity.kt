@@ -90,6 +90,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun executePlaylistLoad(base64Data: String) {
         val cleanData = base64Data.replace("\\s".toRegex(), "")
-        webView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null) [3.1]
+        webView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
     }
 }
