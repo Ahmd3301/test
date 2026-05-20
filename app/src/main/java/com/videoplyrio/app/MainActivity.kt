@@ -13,6 +13,7 @@ import android.webkit.SslErrorHandler
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -53,6 +54,13 @@ class MainActivity : AppCompatActivity() {
 
         setupWebView()
         handleIntent(intent)
+
+        // إغلاق التطبيق كلياً وبشكل نظيف عند الضغط على زر الرجوع بالنظام [1]
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                finishAffinity()
+            }
+        })
     }
 
     private fun setupWebView() {
@@ -130,7 +138,6 @@ class MainActivity : AppCompatActivity() {
             extraHeaders["Referer"] = "https://faselhd.center/"
 
             extractorWebView?.webViewClient = object : WebViewClient() {
-                // تجاوز تحذيرات وأخطاء شهادات الأمان (SSL Errors) برمجياً لمنع تعليق التصفح [1]
                 override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
                     handler?.proceed()
                 }
@@ -155,7 +162,6 @@ class MainActivity : AppCompatActivity() {
                         if (!cleanIframeUrl.isNullOrEmpty() && cleanIframeUrl != "null") {
                             loadIframeAndExtractM3u8(cleanIframeUrl)
                         }
-                        // تم حذف شرط الإلغاء الفوري (cancelLoadingLoop) لمنع إجهاض الاستخراج أثناء تداخل التحويلات [1]
                     }
                 }
             }
@@ -215,7 +221,6 @@ class MainActivity : AppCompatActivity() {
         }
         pollingRunnable?.let { handler.post(it) }
 
-        // وقت انتظار أقصى (12 ثانية) كحماية نهائية لإغلاق التحميل عند الفشل التام
         handler.postDelayed({
             runOnUiThread {
                 stopExtraction()
