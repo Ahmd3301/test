@@ -109,74 +109,74 @@ class MainActivity : AppCompatActivity() {
         mainWebView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
     }
 
-    // دالة بدء عملية التحليل والاستخراج الصامت بالخلفية [2.1, 2.2]
+    // إجبار عملية التحليل والاستخراج بالخلفية لتعمل على خيط المعالجة الرئيسي (UI Thread) لمنع الانهيار [1]
     fun startBackgroundExtraction(mainUrl: String) {
         runOnUiThread {
             mainWebView.evaluateJavascript("window.showLoadingLoop()", null)
-        }
 
-        stopExtraction()
+            stopExtraction()
 
-        // تهيئة متصفح معزول وغير مرئي بالخلفية
-        extractorWebView = WebView(this).apply {
-            settings.apply {
-                javaScriptEnabled = true
-                domStorageEnabled = true
-                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            // تهيئة متصفح الخلفية بأمان على خيط المعالجة الرئيسي [1]
+            extractorWebView = WebView(this@MainActivity).apply {
+                settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                }
             }
-        }
 
-        val extraHeaders = HashMap<String, String>()
-        extraHeaders["Referer"] = "https://faselhd.center/"
+            val extraHeaders = HashMap<String, String>()
+            extraHeaders["Referer"] = "https://faselhd.center/"
 
-        extractorWebView?.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
+            extractorWebView?.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
 
-                // الخطوة الأولى: استخراج رابط مشغل الـ Iframe من صفحة الويب
-                val jsGetIframe = """
-                    (function() {
-                        var firstLi = document.querySelector('li[onclick*="player_iframe.location.href"]');
-                        if (firstLi) {
-                            var onclick = firstLi.getAttribute('onclick');
-                            var match = onclick.match(/'([^']+)'/);
-                            return match ? match[1] : null;
+                    // الخطوة الأولى: استخراج رابط مشغل الـ Iframe من صفحة الويب
+                    val jsGetIframe = """
+                        (function() {
+                            var firstLi = document.querySelector('li[onclick*="player_iframe.location.href"]');
+                            if (firstLi) {
+                                var onclick = firstLi.getAttribute('onclick');
+                                var match = onclick.match(/'([^']+)'/);
+                                return match ? match[1] : null;
+                            }
+                            return null;
+                        })()
+                    """.trimIndent()
+
+                    extractorWebView?.evaluateJavascript(jsGetIframe) { iframeUrl ->
+                        val cleanIframeUrl = iframeUrl?.replace("\"", "")?.trim()
+                        if (!cleanIframeUrl.isNullOrEmpty() && cleanIframeUrl != "null") {
+                            loadIframeAndExtractM3u8(cleanIframeUrl)
+                        } else {
+                            cancelLoadingLoop()
                         }
-                        return null;
-                    })()
-                """.trimIndent()
-
-                extractorWebView?.evaluateJavascript(jsGetIframe) { iframeUrl ->
-                    val cleanIframeUrl = iframeUrl?.replace("\"", "")?.trim()
-                    if (!cleanIframeUrl.isNullOrEmpty() && cleanIframeUrl != "null") {
-                        // الانتقال للخطوة الثانية: تحميل رابط الـ Iframe في متصفح الخلفية
-                        loadIframeAndExtractM3u8(cleanIframeUrl)
-                    } else {
-                        cancelLoadingLoop()
                     }
                 }
             }
-        }
 
-        extractorWebView?.loadUrl(mainUrl, extraHeaders)
+            extractorWebView?.loadUrl(mainUrl, extraHeaders)
+        }
     }
 
     private fun loadIframeAndExtractM3u8(iframeUrl: String) {
-        val extraHeaders = HashMap<String, String>()
-        extraHeaders["Referer"] = "https://faselhd.center/"
+        runOnUiThread {
+            val extraHeaders = HashMap<String, String>()
+            extraHeaders["Referer"] = "https://faselhd.center/"
 
-        extractorWebView?.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                startPollingForM3u8()
+            extractorWebView?.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    startPollingForM3u8()
+                }
             }
+            extractorWebView?.loadUrl(iframeUrl, extraHeaders)
         }
-        extractorWebView?.loadUrl(iframeUrl, extraHeaders)
     }
 
     private fun startPollingForM3u8() {
-        // الاستعلام الدوري عالي الأداء لاكتشاف زر الـ .m3u8 المتولد حركياً
         val jsPoll = """
             (function() {
                 var buttons = document.querySelectorAll('button.hd_btn');
@@ -192,16 +192,16 @@ class MainActivity : AppCompatActivity() {
 
         pollingRunnable = object : Runnable {
             override fun run() {
-                extractorWebView?.evaluateJavascript(jsPoll) { m3u8Url ->
-                    val cleanM3u8 = m3u8Url?.replace("\"", "")?.trim()
-                    if (!cleanM3u8.isNullOrEmpty() && cleanM3u8 != "null") {
-                        runOnUiThread {
+                runOnUiThread {
+                    extractorWebView?.evaluateJavascript(jsPoll) { m3u8Url ->
+                        val cleanM3u8 = m3u8Url?.replace("\"", "")?.trim()
+                        if (!cleanM3u8.isNullOrEmpty() && cleanM3u8 != "null") {
                             mainWebView.evaluateJavascript("window.hideLoadingLoop()", null)
                             mainWebView.evaluateJavascript("window.playExtractedUrl('$cleanM3u8')", null)
+                            stopExtraction()
+                        } else {
+                            handler.postDelayed(this, 300)
                         }
-                        stopExtraction()
-                    } else {
-                        handler.postDelayed(this, 300)
                     }
                 }
             }
@@ -210,8 +210,10 @@ class MainActivity : AppCompatActivity() {
 
         // وقت أقصى للاستجابة (12 ثانية) لمنع الاستهلاك اللانهائي في حال تعثر الخادم
         handler.postDelayed({
-            stopExtraction()
-            cancelLoadingLoop()
+            runOnUiThread {
+                stopExtraction()
+                cancelLoadingLoop()
+            }
         }, 12000)
     }
 
@@ -222,10 +224,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopExtraction() {
-        pollingRunnable?.let { handler.removeCallbacks(it) }
-        pollingRunnable = null
-        extractorWebView?.stopLoading()
-        extractorWebView = null
+        runOnUiThread {
+            pollingRunnable?.let { handler.removeCallbacks(it) }
+            pollingRunnable = null
+            extractorWebView?.stopLoading()
+            extractorWebView = null
+        }
     }
 }
 
@@ -235,7 +239,6 @@ class WebAppInterface(private val activity: MainActivity) {
         activity.finishAffinity()
     }
 
-    // استدعاء بدء عملية الاستخراج بالخلفية من كود الويب
     @JavascriptInterface
     fun triggerExtraction(url: String) {
         activity.startBackgroundExtraction(url)
