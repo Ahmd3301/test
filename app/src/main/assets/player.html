@@ -90,6 +90,7 @@
             max-height: 100% !important; 
         }
 
+        /* كود إخفاء عناصر التحكم كلياً عند الدخول بوضع صورة داخل صورة PiP */
         .plyr--pip-active .plyr__controls, 
         .plyr--pip-active .plyr__title {
             display: none !important;
@@ -174,34 +175,9 @@
             padding: 0 20px 10px !important;
             z-index: 10;
         }
-
-        .process-loop-overlay {
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: #000;
-            z-index: 999999;
-            display: none;
-            align-items: center;
-            justify-content: center;
-        }
-        .spinner {
-            width: 48px;
-            height: 48px;
-            border: 3px solid rgba(255, 255, 255, 0.1);
-            border-radius: 50%;
-            border-top-color: #fff;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
     </style>
 </head>
 <body>
-
-    <div id="process-overlay" class="process-loop-overlay">
-        <div class="spinner"></div>
-    </div>
 
     <div class="video-player-container">
         <!-- تصفير الحاوية ديناميكياً لتحديث الجودات -->
@@ -267,7 +243,6 @@
             // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
             if (isExtractionTarget(url)) {
                 const cleanUrl = url.split('##ex')[0].trim();
-                window.showLoadingLoop();
                 if (window.AndroidBridge && typeof window.AndroidBridge.triggerExtraction === 'function') {
                     window.AndroidBridge.triggerExtraction(cleanUrl);
                 }
@@ -319,8 +294,9 @@
                     const tracks = shakaPlayer.getVariantTracks();
                     const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a, b) => b - a);
 
+                    // تم إعادة إدراج زر 'fullscreen' لحل المشكلة [1.2]
                     const plyrConfig = {
-                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings'],
+                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'fullscreen'],
                         settings: ['quality', 'speed', 'captions']
                     };
 
@@ -342,7 +318,7 @@
             } else {
                 videoElement.src = manifestUri;
                 plyrPlayer = new Plyr(videoElement, {
-                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings'],
+                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'fullscreen'],
                     seekTime: 10,
                     settings: ['speed', 'captions'],
                     fullscreen: { iosNative: true, video: true, container: '.plyr' },
@@ -370,6 +346,69 @@
 
         function initCustomUI(playerInstance) {
             playerContainer = videoElement.closest('.plyr');
+
+            // تأجيل عمليات تطويع وحقن الأزرار لتحدث داخل حدث الجاهزية الرسمي لـ Plyr لتجنب المشاكل [1.2]
+            playerInstance.on('ready', () => {
+                const controlsBar = playerContainer.querySelector('.plyr__controls');
+
+                // تطبيق فئة البعد الحالية حركياً على حاوية المشغل
+                playerContainer.classList.add(modes[currentMode]);
+
+                // 1. استنساخ وزر الـ Fullscreen وتطويعه للدوران بين أبعاد العرض الأربعة
+                const fsBtn = playerContainer.querySelector('[data-plyr="fullscreen"]');
+                if (fsBtn) {
+                    const newFsBtn = fsBtn.cloneNode(true);
+                    fsBtn.parentNode.replaceChild(newFsBtn, fsBtn);
+
+                    newFsBtn.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+
+                        playerContainer.classList.remove(modes[currentMode]);
+                        currentMode = (currentMode + 1) % modes.length;
+                        playerContainer.classList.add(modes[currentMode]);
+
+                        const labelMap = {
+                            'mode-contain': 'Contain',
+                            'mode-cover': 'Cover',
+                            'mode-fill': 'Stretch / Fill',
+                            'mode-original': 'Original Size'
+                        };
+                        newFsBtn.setAttribute('aria-label', labelMap[modes[currentMode]]);
+                    });
+                }
+
+                // 2. حقن وتثبيت زر الـ PiP قسرياً بشكل يدوي ومطابق تماماً لتصميم المشغل الأصلي لضمان ظهوره [2.1, 2.2]
+                if (controlsBar) {
+                    const pipBtn = document.createElement('button');
+                    pipBtn.type = 'button';
+                    pipBtn.className = 'plyr__control';
+                    pipBtn.setAttribute('data-plyr', 'pip');
+                    pipBtn.setAttribute('aria-label', 'Picture in Picture');
+                    pipBtn.innerHTML = `
+                        <svg aria-hidden="true" focusable="false" viewBox="0 0 18 18">
+                            <path d="M16 2H2a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 12H2V4h14v10z"></path>
+                            <path d="M15 9h-5a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1zm-1 5h-3v-3h3v3z"></path>
+                        </svg>
+                    `;
+
+                    // حقن الزر قبل زر الـ Fullscreen الذكي
+                    const targetFsBtn = controlsBar.querySelector('[data-plyr="fullscreen"]');
+                    if (targetFsBtn) {
+                        controlsBar.insertBefore(pipBtn, targetFsBtn);
+                    } else {
+                        controlsBar.appendChild(pipBtn);
+                    }
+
+                    pipBtn.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
+                            window.AndroidBridge.enterPip();
+                        }
+                    });
+                }
+            });
 
             const oldTitle = playerContainer.querySelector('.plyr__title');
             if (oldTitle) oldTitle.remove();
@@ -416,71 +455,9 @@
                 isPlaylistOpen = false;
             });
 
-            playerContainer.classList.add(modes[currentMode]);
-
-            const controlsBar = playerContainer.querySelector('.plyr__controls');
-
-            // 1. استنساخ وزر الـ Fullscreen وتطويعه للدوران بين أبعاد العرض الأربعة
-            const fsBtn = playerContainer.querySelector('[data-plyr="fullscreen"]');
-            if (fsBtn) {
-                const newFsBtn = fsBtn.cloneNode(true);
-                fsBtn.parentNode.replaceChild(newFsBtn, fsBtn);
-
-                newFsBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-
-                    playerContainer.classList.remove(modes[currentMode]);
-                    currentMode = (currentMode + 1) % modes.length;
-                    playerContainer.classList.add(modes[currentMode]);
-
-                    const labelMap = {
-                        'mode-contain': 'Contain',
-                        'mode-cover': 'Cover',
-                        'mode-fill': 'Stretch / Fill',
-                        'mode-original': 'Original Size'
-                    };
-                    newFsBtn.setAttribute('aria-label', labelMap[modes[currentMode]]);
-                });
-            }
-
-            // 2. حقن وتثبيت زر الـ PiP قسرياً بشكل يدوي ومطابق تماماً لتصميم المشغل الأصلي لضمان ظهوره [2.1, 2.2]
-            if (controlsBar) {
-                const pipBtn = document.createElement('button');
-                pipBtn.type = 'button';
-                pipBtn.className = 'plyr__control';
-                pipBtn.setAttribute('data-plyr', 'pip');
-                pipBtn.setAttribute('aria-label', 'Picture in Picture');
-                pipBtn.innerHTML = `
-                    <svg aria-hidden="true" focusable="false" viewBox="0 0 18 18">
-                        <path d="M16 2H2a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 12H2V4h14v10z"></path>
-                        <path d="M15 9h-5a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1zm-1 5h-3v-3h3v3z"></path>
-                    </svg>
-                `;
-
-                // حقن الزر قبل زر الـ Fullscreen الذكي
-                const targetFsBtn = controlsBar.querySelector('[data-plyr="fullscreen"]');
-                if (targetFsBtn) {
-                    controlsBar.insertBefore(pipBtn, targetFsBtn);
-                } else {
-                    controlsBar.appendChild(pipBtn);
-                }
-
-                pipBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
-                        window.AndroidBridge.enterPip();
-                    }
-                });
-            }
-
             playerInstance.on('ready', () => {
                 playerInstance.play();
             });
-
-            // إخفاء حلقة المعالجة تلقائياً فور نجاح تحميل المشغل وعرض الفيديو
-            window.hideLoadingLoop();
         }
 
         document.addEventListener('DOMContentLoaded', () => {
@@ -489,18 +466,12 @@
             
             if (!isDeeplink) {
                 loadStream(currentSrc); 
-            } else {
-                window.showLoadingLoop(); // إظهار حلقة التحميل الصامتة فوراً عند الفتح برابط خارجي
             }
         });
 
-        window.showLoadingLoop = function() {
-            document.getElementById('process-overlay').style.display = 'flex';
-        };
-
-        window.hideLoadingLoop = function() {
-            document.getElementById('process-overlay').style.display = 'none';
-        };
+        // دوال وهمية للمحافظة على التوافق مع نداءات الكوتلن دون إطلاق أي واجهة سوداء للاستخراج الصامت
+        window.showLoadingLoop = function() {};
+        window.hideLoadingLoop = function() {};
 
         window.playExtractedUrl = function(url) {
             loadStream(url);
