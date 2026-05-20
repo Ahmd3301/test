@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>مشغل الفيديو الاحترافي</title>
     
-    <!-- تم الاستغناء تماماً عن Puter.js لسرعة اتصال مباشرة -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.6/shaka-player.compiled.js"></script>
     
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
@@ -165,9 +164,36 @@
             justify-content: center;
         }
         .plyr__control--resize::after { content: '⛶'; font-weight: 900; font-size: 19px; }
+
+        /* حاوية حلقة التحميل الصامتة المتمركزة بمنتصف الشاشة */
+        .process-loop-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #000;
+            z-index: 999999;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        .spinner {
+            width: 48px;
+            height: 48px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
+
+    <!-- طبقة حلقة التحميل الصامتة -->
+    <div id="process-overlay" class="process-loop-overlay">
+        <div class="spinner"></div>
+    </div>
 
     <div class="video-player-container">
         <!-- تصفير الحاوية ديناميكياً لتحديث الجودات -->
@@ -193,7 +219,6 @@
         let currentSrc = currentPlaylist[0].src;
         let currentTitle = currentPlaylist[0].title;
 
-        // تحويل مفاتيح DRM من Base64 إلى Hex
         function base64ToHex(str) {
             let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
             while (b64.length % 4 !== 0) b64 += '=';
@@ -208,6 +233,15 @@
         }
 
         async function loadStream(url) {
+            // التحقق من تفعيل خيار الاستخراج
+            if (url.includes('##ex')) {
+                const cleanUrl = url.split('##ex')[0].trim();
+                if (window.AndroidBridge && typeof window.AndroidBridge.triggerExtraction === 'function') {
+                    window.AndroidBridge.triggerExtraction(cleanUrl);
+                }
+                return; // إيقاف التنفيذ والانتظار حتى يستدعي الكوتلن دالة التشغيل المستخرج
+            }
+
             if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
             if (plyrPlayer) { plyrPlayer.destroy(); plyrPlayer = null; }
 
@@ -225,7 +259,6 @@
                 shaka.polyfill.installAll();
                 shakaPlayer = new shaka.Player(videoElement);
 
-                // تهيئة بفر فوري ذكي لمنع بطء التشغيل
                 shakaPlayer.configure({
                     streaming: {
                         bufferingGoal: 8,      
@@ -385,6 +418,20 @@
         document.addEventListener('DOMContentLoaded', () => {
             loadStream(currentSrc);
         });
+
+        // دوال التحكم بحلقة المعالجة الصامتة من خلال كود الكوتلن
+        window.showLoadingLoop = function() {
+            document.getElementById('process-overlay').style.display = 'flex';
+        };
+
+        window.hideLoadingLoop = function() {
+            document.getElementById('process-overlay').style.display = 'none';
+        };
+
+        // دالة يتم استدعاؤها من الكوتلن فور العثور على البث المباشر المستخرج
+        window.playExtractedUrl = function(url) {
+            loadStream(url);
+        };
 
         window.loadBase64Playlist = function(base64Str) {
             try {
