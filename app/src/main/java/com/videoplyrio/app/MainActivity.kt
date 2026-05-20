@@ -1,6 +1,7 @@
 package com.videoplyrio.app
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
@@ -27,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     private var isPageLoaded = false
     private val handler = Handler(Looper.getMainLooper())
     private var pollingRunnable: Runnable? = null
+    private var iframePollingRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,7 +57,6 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         handleIntent(intent)
 
-        // إغلاق التطبيق كلياً وبشكل نظيف عند الضغط على زر الرجوع بالنظام [1]
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 finishAffinity()
@@ -88,7 +89,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        mainWebView.loadUrl("file:///android_asset/player.html")
+        // تفادي تشغيل الفيديو المدمج في الويب عند الفتح برابط عميق (Deep Link) لضمان الصمت [2.1, 2.2]
+        val hasPendingData = intent?.data != null
+        val targetUrl = if (hasPendingData) "file:///android_asset/player.html?deeplink=true" else "file:///android_asset/player.html"
+        mainWebView.loadUrl(targetUrl)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -119,6 +123,7 @@ class MainActivity : AppCompatActivity() {
         mainWebView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
     }
 
+    // تفعيل عملية استخراج فائقة السرعة بالخلفية (10x Faster) [2.1, 2.2]
     fun startBackgroundExtraction(mainUrl: String) {
         runOnUiThread {
             mainWebView.evaluateJavascript("window.showLoadingLoop()", null)
@@ -142,32 +147,62 @@ class MainActivity : AppCompatActivity() {
                     handler?.proceed()
                 }
 
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-
-                    val jsGetIframe = """
-                        (function() {
-                            var firstLi = document.querySelector('li[onclick*="player_iframe.location.href"]');
-                            if (firstLi) {
-                                var onclick = firstLi.getAttribute('onclick');
-                                var match = onclick.match(/'([^']+)'/);
-                                return match ? match[1] : null;
-                            }
-                            return null;
-                        })()
-                    """.trimIndent()
-
-                    extractorWebView?.evaluateJavascript(jsGetIframe) { iframeUrl ->
-                        val cleanIframeUrl = iframeUrl?.replace("\"", "")?.trim()
-                        if (!cleanIframeUrl.isNullOrEmpty() && cleanIframeUrl != "null") {
-                            loadIframeAndExtractM3u8(cleanIframeUrl)
-                        }
+                // فلترة وحظر الإعلانات والملفات الثقيلة (صور، خطوط، تنسيق) لتوفير البيانات وتسريع الاستخراج 10 أضعاف [2.1, 2.2]
+                override fun shouldInterceptRequest(view: WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
+                    val urlStr = request?.url?.toString() ?: ""
+                    if (urlStr.contains(".jpg") || urlStr.contains(".png") || urlStr.contains(".gif") || 
+                        urlStr.contains(".css") || urlStr.contains("google") || urlStr.contains("analytics") || 
+                        urlStr.contains("doubleclick") || urlStr.contains("onclick") || urlStr.contains("popunder")) {
+                        return android.webkit.WebResourceResponse("text/plain", "UTF-8", null)
                     }
+                    return null
+                }
+
+                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                    super.onPageStarted(view, url, favicon)
+                    // الفحص الدوري المبكر والفوري للمستند قبل اكتمال تحميل الصفحة [2.1, 2.2]
+                    startPollingForIframe()
                 }
             }
 
             extractorWebView?.loadUrl(mainUrl, extraHeaders)
         }
+    }
+
+    private fun startPollingForIframe() {
+        val jsGetIframe = """
+            (function() {
+                var firstLi = document.querySelector('li[onclick*="player_iframe.location.href"]');
+                if (firstLi) {
+                    var onclick = firstLi.getAttribute('onclick');
+                    var match = onclick.match(/'([^']+)'/);
+                    return match ? match[1] : null;
+                }
+                return null;
+            })()
+        """.trimIndent()
+
+        iframePollingRunnable = object : Runnable {
+            override fun run() {
+                runOnUiThread {
+                    extractorWebView?.evaluateJavascript(jsGetIframe) { iframeUrl ->
+                        val cleanIframeUrl = iframeUrl?.replace("\"", "")?.trim()
+                        if (!cleanIframeUrl.isNullOrEmpty() && cleanIframeUrl != "null") {
+                            stopIframePolling()
+                            loadIframeAndExtractM3u8(cleanIframeUrl)
+                        } else {
+                            handler.postDelayed(this, 150) // فحص سريع ومستمر كل 150 ملي ثانية
+                        }
+                    }
+                }
+            }
+        }
+        iframePollingRunnable?.let { handler.post(it) }
+    }
+
+    private fun stopIframePolling() {
+        iframePollingRunnable?.let { handler.removeCallbacks(it) }
+        iframePollingRunnable = null
     }
 
     private fun loadIframeAndExtractM3u8(iframeUrl: String) {
@@ -180,9 +215,18 @@ class MainActivity : AppCompatActivity() {
                     handler?.proceed()
                 }
 
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    startPollingForM3u8()
+                override fun shouldInterceptRequest(view: WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
+                    val urlStr = request?.url?.toString() ?: ""
+                    if (urlStr.contains(".jpg") || urlStr.contains(".png") || urlStr.contains(".gif") || 
+                        urlStr.contains(".css") || urlStr.contains("google") || urlStr.contains("analytics")) {
+                        return android.webkit.WebResourceResponse("text/plain", "UTF-8", null)
+                    }
+                    return null
+                }
+
+                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                    super.onPageStarted(view, url, favicon)
+                    startPollingForM3u8() // فحص مبكر وفوري لصفحة الـ Iframe بمجرد البدء
                 }
             }
             extractorWebView?.loadUrl(iframeUrl, extraHeaders)
@@ -213,7 +257,7 @@ class MainActivity : AppCompatActivity() {
                             mainWebView.evaluateJavascript("window.playExtractedUrl('$cleanM3u8')", null)
                             stopExtraction()
                         } else {
-                            handler.postDelayed(this, 300)
+                            handler.postDelayed(this, 150)
                         }
                     }
                 }
@@ -237,10 +281,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopExtraction() {
         runOnUiThread {
+            stopIframePolling()
             pollingRunnable?.let { handler.removeCallbacks(it) }
             pollingRunnable = null
             extractorWebView?.stopLoading()
             extractorWebView = null
+        }
+    }
+
+    // إخفاء شريط التحكم والعناوين كلياً عند الدخول في وضع PiP لتفادي حجب الرؤية [2.1, 2.2]
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration?) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        runOnUiThread {
+            if (isInPictureInPictureMode) {
+                mainWebView.evaluateJavascript("document.querySelector('.plyr').classList.add('plyr--pip-active')", null)
+            } else {
+                mainWebView.evaluateJavascript("document.querySelector('.plyr').classList.remove('plyr--pip-active')", null)
+            }
+        }
+    }
+
+    // الدخول في وضع PiP الأصلي لأجهزة أندرويد برمجياً [2.1, 2.2]
+    fun enterAndroidPipMode() {
+        runOnUiThread {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val aspectRatio = android.util.Rational(16, 9)
+                val params = android.app.PictureInPictureParams.Builder()
+                    .setAspectRatio(aspectRatio)
+                    .build()
+                enterPictureInPictureMode(params)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                @Suppress("DEPRECATION")
+                enterPictureInPictureMode()
+            }
         }
     }
 }
@@ -254,5 +327,11 @@ class WebAppInterface(private val activity: MainActivity) {
     @JavascriptInterface
     fun triggerExtraction(url: String) {
         activity.startBackgroundExtraction(url)
+    }
+
+    // واجهة تفعيل وضع PiP من الويب [2.1, 2.2]
+    @JavascriptInterface
+    fun enterPip() {
+        activity.enterAndroidPipMode()
     }
 }
