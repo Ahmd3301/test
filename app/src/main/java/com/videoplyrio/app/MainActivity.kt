@@ -3,6 +3,7 @@ package com.videoplyrio.app
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -32,7 +33,15 @@ class MainActivity : AppCompatActivity() {
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
-        webView = WebView(this)
+        // إنشاء الـ WebView مع إعطائه أبعاد ملء الشاشة المطلقة برمجياً
+        webView = WebView(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            isHorizontalScrollBarEnabled = false
+            isVerticalScrollBarEnabled = false
+        }
         setContentView(webView)
 
         setupWebView()
