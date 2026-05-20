@@ -1,7 +1,7 @@
 package com.videoplyrio.app
 
 import android.content.Intent
-import android.content.res.Configuration
+import android.content.res.Configuration // تم إضافة هذا الاستيراد لحل خطأ بناء Kotlin [1]
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
@@ -89,7 +89,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // تفادي تشغيل الفيديو المدمج في الويب عند الفتح برابط عميق (Deep Link) لضمان الصمت [2.1, 2.2]
         val hasPendingData = intent?.data != null
         val targetUrl = if (hasPendingData) "file:///android_asset/player.html?deeplink=true" else "file:///android_asset/player.html"
         mainWebView.loadUrl(targetUrl)
@@ -123,7 +122,6 @@ class MainActivity : AppCompatActivity() {
         mainWebView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
     }
 
-    // تفعيل عملية استخراج فائقة السرعة بالخلفية (10x Faster) [2.1, 2.2]
     fun startBackgroundExtraction(mainUrl: String) {
         runOnUiThread {
             mainWebView.evaluateJavascript("window.showLoadingLoop()", null)
@@ -147,7 +145,6 @@ class MainActivity : AppCompatActivity() {
                     handler?.proceed()
                 }
 
-                // فلترة وحظر الإعلانات والملفات الثقيلة (صور، خطوط، تنسيق) لتوفير البيانات وتسريع الاستخراج 10 أضعاف [2.1, 2.2]
                 override fun shouldInterceptRequest(view: WebView?, request: android.webkit.WebResourceRequest?): android.webkit.WebResourceResponse? {
                     val urlStr = request?.url?.toString() ?: ""
                     if (urlStr.contains(".jpg") || urlStr.contains(".png") || urlStr.contains(".gif") || 
@@ -160,7 +157,6 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
-                    // الفحص الدوري المبكر والفوري للمستند قبل اكتمال تحميل الصفحة [2.1, 2.2]
                     startPollingForIframe()
                 }
             }
@@ -191,7 +187,7 @@ class MainActivity : AppCompatActivity() {
                             stopIframePolling()
                             loadIframeAndExtractM3u8(cleanIframeUrl)
                         } else {
-                            handler.postDelayed(this, 150) // فحص سريع ومستمر كل 150 ملي ثانية
+                            handler.postDelayed(this, 150)
                         }
                     }
                 }
@@ -226,7 +222,7 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
-                    startPollingForM3u8() // فحص مبكر وفوري لصفحة الـ Iframe بمجرد البدء
+                    startPollingForM3u8()
                 }
             }
             extractorWebView?.loadUrl(iframeUrl, extraHeaders)
@@ -289,7 +285,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // إخفاء شريط التحكم والعناوين كلياً عند الدخول في وضع PiP لتفادي حجب الرؤية [2.1, 2.2]
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration?) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         runOnUiThread {
@@ -301,7 +296,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // الدخول في وضع PiP الأصلي لأجهزة أندرويد برمجياً [2.1, 2.2]
     fun enterAndroidPipMode() {
         runOnUiThread {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -329,7 +323,6 @@ class WebAppInterface(private val activity: MainActivity) {
         activity.startBackgroundExtraction(url)
     }
 
-    // واجهة تفعيل وضع PiP من الويب [2.1, 2.2]
     @JavascriptInterface
     fun enterPip() {
         activity.enterAndroidPipMode()
