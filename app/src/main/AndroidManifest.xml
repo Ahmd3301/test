@@ -8,7 +8,7 @@
         android:allowBackup="true"
         android:hardwareAccelerated="true"
         android:label="Video Plyr"
-        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+        android:theme="@style/Theme.AppCompat.NoActionBar"
         android:usesCleartextTraffic="true">
         
         <activity
@@ -21,7 +21,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- استقبال الروابط العميقة (Deep Links) -->
             <intent-filter android:label="Open video playlist">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
