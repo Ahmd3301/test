@@ -6,16 +6,14 @@
     <title>مشغل الفيديو الاحترافي</title>
     
     <!-- ------------------------------------------------------------- -->
-    <!-- المحاكاة القسرية لـ HTML5 Picture-in-Picture لفرض تفعيل وعرض زر PiP الأصلي [2.1, 2.2] -->
+    <!-- محاكاة بروتوكولية لـ HTML5 Picture-in-Picture لفرض تفعيل وعرض زر PiP الأصلي [2.1, 2.2] -->
     <!-- ------------------------------------------------------------- -->
     <script>
-        // إعلان دعم PiP في البيئة بروتوكولياً بشكل مطلق
         Object.defineProperty(document, 'pictureInPictureEnabled', {
             get: function() { return true; },
             configurable: true
         });
 
-        // إعادة كتابة الدالة قسرياً دون قيود لتوجيه طلب التشغيل لجسر أندرويد مباشرة
         HTMLVideoElement.prototype.requestPictureInPicture = async function() {
             if (window.AndroidBridge && typeof window.AndroidBridge.enterPip === 'function') {
                 window.AndroidBridge.enterPip();
@@ -31,6 +29,8 @@
     </script>
     <!-- ------------------------------------------------------------- -->
 
+    <!-- تضمين مكتبة mux.js لتجاوز قيود تشغيل روابط الـ .ts وفك تشفيرها حركياً [4] -->
+    <script src="https://cdn.jsdelivr.net/npm/mux.js@6.0.1/dist/mux.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.6/shaka-player.compiled.js"></script>
     
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
@@ -74,7 +74,6 @@
             padding: 0 !important; /* إلغاء هوامش الأمان لملء الشاشة بالكامل خلف النوتش */
         }
 
-        /* تفعيل الظهور المباشر للمشغل لعرض حلقة التحميل الدائرية الرسمية لـ Plyr تلقائياً */
         .video-player-container {
             width: 100%;
             height: 100%;
@@ -207,7 +206,8 @@
 <body>
 
     <div class="video-player-container">
-        <!-- تصفير الحاوية ديناميكياً لتحديث الجودات -->
+        <!-- عنصر الفيديو ثابت بنسبة 100% في الـ DOM ولا يتم تدميره وإعادة إنشائه نهائياً لمنع وميض الشاشة الصغير -->
+        <video id="player" crossorigin playsinline autoplay></video>
     </div>
 
     <script>
@@ -221,7 +221,6 @@
 
         let isPlaylistOpen = false;
         
-        // الأوضاع الأربعة لتغيير الأبعاد مع تعيين وضع Stretch / Fill ليعمل افتراضياً دائماً
         const modes = ['mode-contain', 'mode-cover', 'mode-fill', 'mode-original'];
         let currentMode = 2; // البعد الافتراضي الدائم للمشغل هو Stretch / Fill
 
@@ -233,39 +232,23 @@
         let currentTitle = currentPlaylist[0].title;
         let currentIndex = 0; // تتبع الفهرس لضمان ثبات العنصر النشط بالـ Playlist بدقة
 
-        function base64ToHex(str) {
-            let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
-            while (b64.length % 4 !== 0) b64 += '=';
-            const raw = window.atob(b64);
-            let hex = '';
-            for (let i = 0; i < raw.length; i++) {
-                let h = raw.charCodeAt(i).toString(16);
-                if (h.length === 1) h = '0' + h;
-                hex += h;
-            }
-            return hex;
-        }
-
         // فحص ذكي وتلقائي لتحديد هل الرابط يحتاج استخراج بالخلفية أم هو رابط بث مباشر [2.1, 2.2]
         function isExtractionTarget(url) {
             if (url.includes('##ex')) return true;
             const cleanUrl = url.split('###')[0].split('?')[0].toLowerCase();
             // الفحص التلقائي لروابط فاصل إعلاني في الـ Playlist بدون وجود وسم يدوياً لكل رابط
-            if (cleanUrl.includes('fasel') && !cleanUrl.endsWith('.m3u8') && !cleanUrl.endsWith('.mpd') && !cleanUrl.endsWith('.mp4')) {
+            if (cleanUrl.includes('fasel') && !cleanUrl.endsWith('.m3u8') && !cleanUrl.endsWith('.mpd') && !cleanUrl.endsWith('.mp4') && !cleanUrl.endsWith('.ts')) {
                 return true;
             }
             return false;
         }
 
         async function loadStream(url) {
-            // إيقاف وكتم أي فيديو يعمل بالخلفية فوراً لمنع تسريب الصوت والبدء من جديد
-            if (videoElement) {
-                videoElement.pause();
-                videoElement.src = "";
-                try { videoElement.load(); } catch(e){}
+            // تفريغ البث السابق لـ Shaka Player برمجياً دون تدمير عنصر الـ Video [4]
+            if (shakaPlayer) {
+                await shakaPlayer.unload();
             }
-            if (plyrPlayer) { plyrPlayer.stop(); }
-            if (shakaPlayer) { await shakaPlayer.destroy(); shakaPlayer = null; }
+            videoElement.src = "";
 
             // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
             if (isExtractionTarget(url)) {
@@ -276,29 +259,14 @@
                 return;
             }
 
-            const container = document.querySelector('.video-player-container');
-            // تم إزالة السمة "controls" الافتراضية لمنع المتصفح من رسم مشغله الرمادي البدائي
-            container.innerHTML = '<video id="player" crossorigin playsinline autoplay></video>';
-            videoElement = document.getElementById('player');
-
             const hasDRM = url.includes('###');
             const manifestUri = hasDRM ? url.split('###')[0].trim() : url;
 
             const isHls = manifestUri.includes('.m3u8');
             const isDash = manifestUri.includes('.mpd');
+            const isTs = manifestUri.includes('.ts'); // تشخيص روابط الـ TS المباشرة [4]
 
-            if (isHls || isDash) {
-                shaka.polyfill.installAll();
-                shakaPlayer = new shaka.Player(videoElement);
-
-                shakaPlayer.configure({
-                    streaming: {
-                        bufferingGoal: 8,      
-                        rebufferingGoal: 1.5,  
-                        bufferBehind: 10
-                    }
-                });
-
+            if (isHls || isDash || isTs) {
                 if (hasDRM) {
                     try {
                         const keyParts = url.split('###')[1].split(':');
@@ -316,20 +284,15 @@
                     let mimeType = null;
                     if (isDash) { mimeType = 'application/dash+xml'; }
                     else if (isHls) { mimeType = 'application/x-mpegurl'; }
+                    else if (isTs) { mimeType = 'video/mp2t'; } // تهيئة نوع البث لـ MPEG-TS لتوجيه المحول [4]
 
                     await shakaPlayer.load(manifestUri, null, mimeType);
 
                     const tracks = shakaPlayer.getVariantTracks();
                     const heights = [...new Set(tracks.map(t => t.height).filter(h => h))].sort((a, b) => b - a);
 
-                    // تفعيل زر 'pip' بالإضافة إلى زر 'fullscreen' الأصلي لـ Plyr
-                    const plyrConfig = {
-                        controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
-                        settings: ['quality', 'speed', 'captions']
-                    };
-
                     if (heights.length > 0) {
-                        plyrConfig.quality = {
+                        plyrPlayer.quality = {
                             default: 'auto',
                             options: ['auto', ...heights],
                             forced: true,
@@ -337,23 +300,12 @@
                         };
                     }
 
-                    plyrPlayer = new Plyr(videoElement, plyrConfig);
-                    initCustomUI(plyrPlayer);
-
                 } catch (e) {
                     console.error("Manifest Load Failed Exception:", e);
                 }
             } else {
                 videoElement.src = manifestUri;
-                plyrPlayer = new Plyr(videoElement, {
-                    controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
-                    seekTime: 10,
-                    settings: ['speed', 'captions'],
-                    fullscreen: { iosNative: true, video: true, container: '.plyr' },
-                    hideControls: true,
-                    clickToPlay: false
-                });
-                initCustomUI(plyrPlayer);
+                videoElement.play().catch(function(e) { console.error(e); });
             }
         }
 
@@ -403,8 +355,6 @@
                         newFsBtn.setAttribute('aria-label', labelMap[modes[currentMode]]);
                     });
                 }
-
-                playerInstance.play();
             });
 
             const oldTitle = playerContainer.querySelector('.plyr__title');
@@ -453,12 +403,39 @@
             });
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('DOMContentLoaded', async () => {
+            videoElement = document.getElementById('player');
+
+            // 1. تهيئة الشاكا بلاير لمرة واحدة فقط عند تشغيل التطبيق لضمان الثبات [4]
+            shaka.polyfill.installAll();
+            shakaPlayer = new shaka.Player(videoElement);
+
+            shakaPlayer.configure({
+                streaming: {
+                    bufferingGoal: 8,      
+                    rebufferingGoal: 1.5,  
+                    bufferBehind: 10
+                }
+            });
+
+            shakaPlayer.addEventListener('error', e => {
+                console.error("Shaka Player Error:", e.detail);
+            });
+
+            // 2. تهيئة مشغل Plyr لمرة واحدة فقط عند التشغيل الأول
+            const plyrConfig = {
+                controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
+                settings: ['quality', 'speed', 'captions']
+            };
+            plyrPlayer = new Plyr(videoElement, plyrConfig);
+            initCustomUI(plyrPlayer);
+
+            // 3. التحقق وتحميل الرابط الافتراضي
             const urlParams = new URLSearchParams(window.location.search);
             const isDeeplink = urlParams.get('deeplink') === 'true';
             
             if (!isDeeplink) {
-                loadStream(currentSrc); 
+                await loadStream(currentSrc); 
             }
         });
 
