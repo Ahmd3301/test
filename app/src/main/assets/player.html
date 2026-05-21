@@ -29,8 +29,7 @@
     </script>
     <!-- ------------------------------------------------------------- -->
 
-    <!-- تضمين مكتبات التحويل الفوري mux.js ومكتبة mpegts.js لدعم بث الـ IPTV وقنوات الـ .ts [4] -->
-    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+    <!-- تضمين مكتبة mux.js لتجاوز قيود تشغيل روابط الـ .ts وفك تشفيرها حركياً [4] -->
     <script src="https://cdn.jsdelivr.net/npm/mux.js@6.0.1/dist/mux.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.6/shaka-player.compiled.js"></script>
     
@@ -73,6 +72,15 @@
             background: #000;
             overflow: hidden;
             padding: 0 !important; /* إلغاء هوامش الأمان لملء الشاشة بالكامل خلف النوتش */
+        }
+
+        /* حظر وإخفاء شعار تشغيل الفيديو الافتراضي الدائري الرمادي للنظام تماماً برمجياً */
+        video::-webkit-media-controls-start-playback-button {
+            display: none !important;
+            -webkit-appearance: none;
+        }
+        video::-webkit-media-controls-overlay-play-button {
+            display: none !important;
         }
 
         .video-player-container {
@@ -207,14 +215,13 @@
 <body>
 
     <div class="video-player-container">
-        <!-- عنصر الفيديو ثابت بنسبة 100% في الـ DOM ولا يتم تدميره وإعادة إنشائه نهائياً لمنع وميض الشاشة الصغير -->
+        <!-- عنصر فيديو ثابت بنسبة 100% في الـ DOM ولا يتم حذفه نهائياً لمنع وميض وتجمد الشاشة -->
         <video id="player" crossorigin playsinline autoplay></video>
     </div>
 
     <script>
         let shakaPlayer = null;
         let plyrPlayer = null;
-        let mpegtsPlayer = null; // مشغل الـ MPEG-TS لتدعيم بث الـ IPTV المباشر [4]
 
         let playerContainer = null;
         let videoElement = null;
@@ -252,33 +259,55 @@
         function isExtractionTarget(url) {
             if (url.includes('##ex')) return true;
             const cleanUrl = url.split('###')[0].split('?')[0].toLowerCase();
-            // الفحص التلقائي لروابط فاصل إعلاني في الـ Playlist بدون وجود وسم يدوياً لكل رابط
+            // الفحص التلقائي لروابط فاصل إعلاني في الـ Playlist دون الحاجة لوسم يدوياً لكل حلقة ومراعاة ملفات الـ ts [4]
             if (cleanUrl.includes('fasel') && !cleanUrl.endsWith('.m3u8') && !cleanUrl.endsWith('.mpd') && !cleanUrl.endsWith('.mp4') && !cleanUrl.endsWith('.ts')) {
                 return true;
             }
             return false;
         }
 
+        // دالة التهيئة الديناميكية الفورية لضمان بناء المتغيرات قبل معالجة أي رابط عميق لمنع التجمد تماماً
+        function ensurePlayerInitialized() {
+            if (shakaPlayer && plyrPlayer) return;
+
+            videoElement = document.getElementById('player');
+            if (!videoElement) return;
+
+            // 1. تهيئة الشاكا بلاير لمرة واحدة فقط عند تشغيل التطبيق لضمان الثبات [4]
+            shaka.polyfill.installAll();
+            shakaPlayer = new shaka.Player(videoElement);
+
+            shakaPlayer.configure({
+                streaming: {
+                    bufferingGoal: 8,      
+                    rebufferingGoal: 1.5,  
+                    bufferBehind: 10
+                }
+            });
+
+            shakaPlayer.addEventListener('error', e => {
+                console.error("Shaka Player Error:", e.detail);
+            });
+
+            // 2. تهيئة مشغل Plyr لمرة واحدة فقط عند التشغيل الأول
+            const plyrConfig = {
+                controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
+                settings: ['quality', 'speed', 'captions']
+            };
+            plyrPlayer = new Plyr(videoElement, plyrConfig);
+            initCustomUI(plyrPlayer);
+        }
+
         async function loadStream(url) {
+            ensurePlayerInitialized(); // جلب وتهيئة المشغل فوراً في حال لم يكن مهيئاً لمنع أخطاء الـ TypeError القاتلة
+
             // تفريغ البث السابق لـ Shaka Player برمجياً دون تدمير عنصر الـ Video [4]
             if (shakaPlayer) {
                 await shakaPlayer.unload();
             }
-
-            // تدمير وإغلاق الجلسة السابقة لمشغل mpegtsPlayer إن وجدت وتصفير الذاكرة [4]
-            if (mpegtsPlayer) {
-                try {
-                    mpegtsPlayer.pause();
-                    mpegtsPlayer.unload();
-                    mpegtsPlayer.detachMediaElement();
-                    mpegtsPlayer.destroy();
-                } catch(e) {
-                    console.error("Error destroying mpegtsPlayer:", e);
-                }
-                mpegtsPlayer = null;
+            if (videoElement) {
+                videoElement.src = "";
             }
-
-            videoElement.src = "";
 
             // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
             if (isExtractionTarget(url)) {
@@ -294,25 +323,9 @@
 
             const isHls = manifestUri.includes('.m3u8');
             const isDash = manifestUri.includes('.mpd');
-            const isTs = manifestUri.includes('.ts'); // تشخيص روابط الـ TS المباشرة لـ IPTV [4]
+            const isTs = manifestUri.includes('.ts'); // تشخيص روابط الـ TS المباشرة [4]
 
-            if (isTs) {
-                // استخدام محرك mpegts.js فائق السرعة لتفكيك وبث قنوات الـ IPTV مباشرة [4]
-                if (typeof mpegts !== 'undefined' && mpegts.isSupported()) {
-                    mpegtsPlayer = mpegts.createPlayer({
-                        type: 'mpegts',
-                        isLive: true,
-                        url: manifestUri
-                    }, {
-                        enableWorker: true,
-                        lazyLoadMaxDuration: 3 * 60,
-                        seekType: 'range'
-                    });
-                    mpegtsPlayer.attachMediaElement(videoElement);
-                    mpegtsPlayer.load();
-                    videoElement.play().catch(function(e) { console.error(e); });
-                }
-            } else if (isHls || isDash) {
+            if (isHls || isDash || isTs) {
                 if (hasDRM) {
                     try {
                         const keyParts = url.split('###')[1].split(':');
@@ -330,6 +343,7 @@
                     let mimeType = null;
                     if (isDash) { mimeType = 'application/dash+xml'; }
                     else if (isHls) { mimeType = 'application/x-mpegurl'; }
+                    else if (isTs) { mimeType = 'video/mp2t'; } // تهيئة نوع البث لـ MPEG-TS لتوجيه المحول [4]
 
                     await shakaPlayer.load(manifestUri, null, mimeType);
 
@@ -451,39 +465,7 @@
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
-            videoElement = document.getElementById('player');
-
-            // 1. تهيئة الشاكا بلاير لمرة واحدة فقط عند تشغيل التطبيق لضمان الثبات [4]
-            shaka.polyfill.installAll();
-            shakaPlayer = new shaka.Player(videoElement);
-
-            shakaPlayer.configure({
-                streaming: {
-                    bufferingGoal: 8,      
-                    rebufferingGoal: 1.5,  
-                    bufferBehind: 10
-                }
-            });
-
-            shakaPlayer.addEventListener('error', e => {
-                console.error("Shaka Player Error:", e.detail);
-            });
-
-            // 2. تهيئة مشغل Plyr لمرة واحدة فقط عند التشغيل الأول
-            const plyrConfig = {
-                controls: ['rewind', 'play', 'fast-forward', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'pip', 'fullscreen'],
-                settings: ['quality', 'speed', 'captions']
-            };
-            plyrPlayer = new Plyr(videoElement, plyrConfig);
-            initCustomUI(plyrPlayer);
-
-            // 3. التحقق وتحميل الرابط الافتراضي
-            const urlParams = new URLSearchParams(window.location.search);
-            const isDeeplink = urlParams.get('deeplink') === 'true';
-            
-            if (!isDeeplink) {
-                await loadStream(currentSrc); 
-            }
+            ensurePlayerInitialized(); // التأكيد الوقائي على تهيئة المشغلات عند اكتمال الـ DOM
         });
 
         // دوال وهمية فارغة للمحافظة على التوافق التام مع نداءات الكوتلن دون استخدام شاشات انتظار سوداء
@@ -495,6 +477,7 @@
         };
 
         window.loadBase64Playlist = function(base64Str) {
+            ensurePlayerInitialized(); // جلب المشغلات قسرياً عند فتح قائمة تشغيل برابط عميق لتجنب الـ null
             try {
                 var binaryString = atob(base64Str);
                 var percentEscaped = binaryString.split('').map(function(c) {
