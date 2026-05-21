@@ -114,7 +114,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executePlaylistLoad(base64Data: String) {
-        val cleanData = base64Data.replace("\\s".toRegex(), "")
+        // فك تشفير الرابط العميق وإعادة تحويل الفراغات المستبدلة بروتوكولياً إلى علامات زائد لسلامة نص الـ Base64
+        val cleanData = base64Data.replace(" ", "+").replace("\\s".toRegex(), "")
         mainWebView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
     }
 
