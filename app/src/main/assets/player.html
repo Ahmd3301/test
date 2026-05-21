@@ -259,19 +259,22 @@
         function isExtractionTarget(url) {
             if (url.includes('##ex')) return true;
             const cleanUrl = url.split('###')[0].split('?')[0].toLowerCase();
-            // الفحص التلقائي لروابط فاصل إعلاني في الـ Playlist دون الحاجة لوسم يدوياً لكل حلقة ومراعاة ملفات الـ ts [4]
+            // الفحص التلقائي لروابط فاصل إعلاني في الـ Playlist بدون وجود وسم يدوياً لكل حلقة ومراعاة ملفات الـ ts [4]
             if (cleanUrl.includes('fasel') && !cleanUrl.endsWith('.m3u8') && !cleanUrl.endsWith('.mpd') && !cleanUrl.endsWith('.mp4') && !cleanUrl.endsWith('.ts')) {
                 return true;
             }
             return false;
         }
 
-        // دالة التهيئة الديناميكية الفورية لضمان بناء المتغيرات قبل معالجة أي رابط عميق لمنع التجمد تماماً
+        // دالة التهيئة الديناميكية الفورية لضمان بناء المتغيرات قبل معالجة أي رابط عميق لمنع التجمد تماماً [1.2, 2.1]
         function ensurePlayerInitialized() {
             if (shakaPlayer && plyrPlayer) return;
 
             videoElement = document.getElementById('player');
-            if (!videoElement) return;
+            if (!videoElement) {
+                console.error("Video element not ready in DOM!");
+                return;
+            }
 
             // 1. تهيئة الشاكا بلاير لمرة واحدة فقط عند تشغيل التطبيق لضمان الثبات [4]
             shaka.polyfill.installAll();
@@ -466,6 +469,19 @@
 
         document.addEventListener('DOMContentLoaded', async () => {
             ensurePlayerInitialized(); // التأكيد الوقائي على تهيئة المشغلات عند اكتمال الـ DOM
+            
+            const urlParams = new URLSearchParams(window.location.search);
+            const isDeeplink = urlParams.get('deeplink') === 'true';
+            
+            // في الفتح المباشر فقط نقوم بالتشغيل التلقائي برمجياً لمنع تعارض الـ Deep Link
+            if (!isDeeplink) {
+                await loadStream(currentSrc); 
+            } else {
+                // إخطار الكوتلن بجاهزية المشغل والـ DOM تماماً لاستلام الرابط العميق بأمان [2.1, 2.2]
+                if (window.AndroidBridge && typeof window.AndroidBridge.onPageReady === 'function') {
+                    window.AndroidBridge.onPageReady();
+                }
+            }
         });
 
         // دوال وهمية فارغة للمحافظة على التوافق التام مع نداءات الكوتلن دون استخدام شاشات انتظار سوداء
