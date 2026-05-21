@@ -29,7 +29,8 @@
     </script>
     <!-- ------------------------------------------------------------- -->
 
-    <!-- تضمين مكتبة mux.js لتجاوز قيود تشغيل روابط الـ .ts وفك تشفيرها حركياً [4] -->
+    <!-- تضمين مكتبات التحويل الفوري mux.js ومكتبة mpegts.js لدعم بث الـ IPTV وقنوات الـ .ts [4] -->
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mux.js@6.0.1/dist/mux.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.3.6/shaka-player.compiled.js"></script>
     
@@ -213,6 +214,7 @@
     <script>
         let shakaPlayer = null;
         let plyrPlayer = null;
+        let mpegtsPlayer = null; // مشغل الـ MPEG-TS لتدعيم بث الـ IPTV المباشر [4]
 
         let playerContainer = null;
         let videoElement = null;
@@ -221,6 +223,7 @@
 
         let isPlaylistOpen = false;
         
+        // الأوضاع الأربعة لتغيير الأبعاد مع تعيين وضع Stretch / Fill ليعمل افتراضياً دائماً
         const modes = ['mode-contain', 'mode-cover', 'mode-fill', 'mode-original'];
         let currentMode = 2; // البعد الافتراضي الدائم للمشغل هو Stretch / Fill
 
@@ -231,6 +234,19 @@
         let currentSrc = currentPlaylist[0].src;
         let currentTitle = currentPlaylist[0].title;
         let currentIndex = 0; // تتبع الفهرس لضمان ثبات العنصر النشط بالـ Playlist بدقة
+
+        function base64ToHex(str) {
+            let b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+            while (b64.length % 4 !== 0) b64 += '=';
+            const raw = window.atob(b64);
+            let hex = '';
+            for (let i = 0; i < raw.length; i++) {
+                let h = raw.charCodeAt(i).toString(16);
+                if (h.length === 1) h = '0' + h;
+                hex += h;
+            }
+            return hex;
+        }
 
         // فحص ذكي وتلقائي لتحديد هل الرابط يحتاج استخراج بالخلفية أم هو رابط بث مباشر [2.1, 2.2]
         function isExtractionTarget(url) {
@@ -248,6 +264,20 @@
             if (shakaPlayer) {
                 await shakaPlayer.unload();
             }
+
+            // تدمير وإغلاق الجلسة السابقة لمشغل mpegtsPlayer إن وجدت وتصفير الذاكرة [4]
+            if (mpegtsPlayer) {
+                try {
+                    mpegtsPlayer.pause();
+                    mpegtsPlayer.unload();
+                    mpegtsPlayer.detachMediaElement();
+                    mpegtsPlayer.destroy();
+                } catch(e) {
+                    console.error("Error destroying mpegtsPlayer:", e);
+                }
+                mpegtsPlayer = null;
+            }
+
             videoElement.src = "";
 
             // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
@@ -264,9 +294,25 @@
 
             const isHls = manifestUri.includes('.m3u8');
             const isDash = manifestUri.includes('.mpd');
-            const isTs = manifestUri.includes('.ts'); // تشخيص روابط الـ TS المباشرة [4]
+            const isTs = manifestUri.includes('.ts'); // تشخيص روابط الـ TS المباشرة لـ IPTV [4]
 
-            if (isHls || isDash || isTs) {
+            if (isTs) {
+                // استخدام محرك mpegts.js فائق السرعة لتفكيك وبث قنوات الـ IPTV مباشرة [4]
+                if (typeof mpegts !== 'undefined' && mpegts.isSupported()) {
+                    mpegtsPlayer = mpegts.createPlayer({
+                        type: 'mpegts',
+                        isLive: true,
+                        url: manifestUri
+                    }, {
+                        enableWorker: true,
+                        lazyLoadMaxDuration: 3 * 60,
+                        seekType: 'range'
+                    });
+                    mpegtsPlayer.attachMediaElement(videoElement);
+                    mpegtsPlayer.load();
+                    videoElement.play().catch(function(e) { console.error(e); });
+                }
+            } else if (isHls || isDash) {
                 if (hasDRM) {
                     try {
                         const keyParts = url.split('###')[1].split(':');
@@ -284,7 +330,6 @@
                     let mimeType = null;
                     if (isDash) { mimeType = 'application/dash+xml'; }
                     else if (isHls) { mimeType = 'application/x-mpegurl'; }
-                    else if (isTs) { mimeType = 'video/mp2t'; } // تهيئة نوع البث لـ MPEG-TS لتوجيه المحول [4]
 
                     await shakaPlayer.load(manifestUri, null, mimeType);
 
@@ -355,6 +400,8 @@
                         newFsBtn.setAttribute('aria-label', labelMap[modes[currentMode]]);
                     });
                 }
+
+                playerInstance.play();
             });
 
             const oldTitle = playerContainer.querySelector('.plyr__title');
