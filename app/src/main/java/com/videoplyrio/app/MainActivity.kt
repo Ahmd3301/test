@@ -79,9 +79,13 @@ class MainActivity : AppCompatActivity() {
         mainWebView.addJavascriptInterface(WebAppInterface(this), "AndroidBridge")
 
         mainWebView.webViewClient = object : WebViewClient() {
-            // تم تصفير فحص التشغيل من هنا كلياً لحل التعارض مع تهيئة الـ DOM [2.1, 2.2]
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                isPageLoaded = true
+                pendingPlaylistData?.let {
+                    executePlaylistLoad(it)
+                    pendingPlaylistData = null
+                }
             }
         }
 
@@ -114,20 +118,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun executePlaylistLoad(base64Data: String) {
-        // فك تشفير الرابط العميق وإعادة تحويل الفراغات المستبدلة بروتوكولياً إلى علامات زائد لسلامة نص الـ Base64
-        val cleanData = base64Data.replace(" ", "+").replace("\\s".toRegex(), "")
+        val cleanData = base64Data.replace("\\s".toRegex(), "")
         mainWebView.evaluateJavascript("window.loadBase64Playlist('$cleanData')", null)
-    }
-
-    // يتم استدعاؤها فوراً وبأمان عندما يعلن ملف الويب عن جاهزية الـ DOM كلياً لتفادي الـ null [2.1, 2.2]
-    fun onWebPageReady() {
-        runOnUiThread {
-            isPageLoaded = true
-            pendingPlaylistData?.let {
-                executePlaylistLoad(it)
-                pendingPlaylistData = null
-            }
-        }
     }
 
     fun startBackgroundExtraction(mainUrl: String) {
@@ -334,11 +326,5 @@ class WebAppInterface(private val activity: MainActivity) {
     @JavascriptInterface
     fun enterPip() {
         activity.enterAndroidPipMode()
-    }
-
-    // استلام إخطار جاهزية الـ DOM من الويب وتمريره للملف الرئيسي [2.1, 2.2]
-    @JavascriptInterface
-    fun onPageReady() {
-        activity.onWebPageReady()
     }
 }
