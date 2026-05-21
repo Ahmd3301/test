@@ -6,7 +6,7 @@
     <title>مشغل الفيديو الاحترافي</title>
     
     <!-- ------------------------------------------------------------- -->
-    <!-- محاكاة بروتوكولية لـ HTML5 Picture-in-Picture لفرض تفعيل وعرض زر PiP الأصلي [2.1, 2.2] -->
+    <!-- محاكاة بروتوكولية لـ HTML5 Picture-in-Picture في الرأس قبل تحميل Plyr لضمان تفعيل الزر الأصلي [2.1, 2.2] -->
     <!-- ------------------------------------------------------------- -->
     <script>
         Object.defineProperty(document, 'pictureInPictureEnabled', {
@@ -309,7 +309,9 @@
                 await shakaPlayer.unload();
             }
             if (videoElement) {
-                videoElement.src = "";
+                // الطريقة المعيارية الآمنة لـ HTML5 لتصفير وسم الفيديو دون محاولة جلب الصفحة داخلياً
+                videoElement.removeAttribute('src');
+                try { videoElement.load(); } catch(e){}
             }
 
             // تفعيل التحليل الذكي للرابط وتوجيهه لخادوم الاستخراج
