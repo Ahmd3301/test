@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
@@ -16,15 +17,22 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var mainWebView: WebView
+    private lateinit var containerLayout: FrameLayout
     private var extractorWebView: WebView? = null
 
     private var pendingPlaylistData: String? = null
@@ -34,30 +42,27 @@ class MainActivity : AppCompatActivity() {
     private var pollingRunnable: Runnable? = null
     private var iframePollingRunnable: Runnable? = null
 
-    // حالة الاستخراج — لمنع التنفيذ المتداخل
-    @Volatile private var isExtracting = false
+    // خيط خلفي أحادي لتنفيذ طلبات الشبكة لفك حزم الـ Packer بسرعة فائقة وبدون تجميد الواجهة
+    private val networkExecutor = Executors.newSingleThreadExecutor()
 
-    // رابط آخر محاولة — لإعادة المحاولة عند الفشل
+    @Volatile private var isExtracting = false
     private var lastExtractionUrl: String? = null
 
     companion object {
-        private const val EXTRACTION_TIMEOUT_MS = 15_000L   // 15 ثانية
-        private const val POLL_INTERVAL_MS      = 100L      // polling كل 100ms بدل 150
+        private const val EXTRACTION_TIMEOUT_MS = 15_000L
+        private const val POLL_INTERVAL_MS      = 100L
 
-        // User Agent يحاكي Chrome Desktop لتجاوز حجب الموبايل
         private const val DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) " +
             "Chrome/124.0.0.0 Safari/537.36"
 
-        // امتدادات الموارد غير المطلوبة — يُحجب تحميلها لتسريع الاستخراج
         private val BLOCKED_EXTENSIONS = listOf(
             ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
             ".css", ".woff", ".woff2", ".ttf", ".eot",
             ".ico", ".pdf"
         )
 
-        // نطاقات يجب حجبها (إعلانات وتتبع)
         private val BLOCKED_DOMAINS = listOf(
             "google-analytics", "doubleclick", "googlesyndication",
             "facebook.net", "connect.facebook", "twitter.com/i/jot",
@@ -67,14 +72,18 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    // ============================================================
-    // Lifecycle
-    // ============================================================
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         applyFullscreenFlags()
+
+        // استخدام حاوية FrameLayout للسماح بإضافة متصفح الاستخراج الخفي برمجياً
+        containerLayout = FrameLayout(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        setContentView(containerLayout)
 
         mainWebView = WebView(this).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -84,7 +93,7 @@ class MainActivity : AppCompatActivity() {
             isHorizontalScrollBarEnabled = false
             isVerticalScrollBarEnabled   = false
         }
-        setContentView(mainWebView)
+        containerLayout.addView(mainWebView)
 
         setupMainWebView()
         handleIntent(intent)
@@ -101,25 +110,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onUserLeaveHint() {
-        // الدخول التلقائي لـ PiP عند الضغط على زر الهوم أثناء التشغيل
         super.onUserLeaveHint()
         enterAndroidPipMode()
     }
 
     override fun onDestroy() {
-        // تنظيف كامل — منع Memory Leaks
         cleanupHandler()
         stopExtraction()
+        networkExecutor.shutdownNow()
         mainWebView.apply {
             stopLoading()
             destroy()
         }
         super.onDestroy()
     }
-
-    // ============================================================
-    // Fullscreen Setup
-    // ============================================================
 
     private fun applyFullscreenFlags() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -133,10 +137,6 @@ class MainActivity : AppCompatActivity() {
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
 
-    // ============================================================
-    // Main WebView Setup
-    // ============================================================
-
     private fun setupMainWebView() {
         mainWebView.settings.apply {
             javaScriptEnabled          = true
@@ -148,7 +148,6 @@ class MainActivity : AppCompatActivity() {
             @Suppress("SetJavaScriptEnabled")
             allowFileAccessFromFileURLs    = true
             allowUniversalAccessFromFileURLs = true
-            // تسريع الرسم
             setRenderPriority(WebSettings.RenderPriority.HIGH)
             cacheMode = WebSettings.LOAD_DEFAULT
         }
@@ -175,10 +174,6 @@ class MainActivity : AppCompatActivity() {
         mainWebView.loadUrl(targetUrl)
     }
 
-    // ============================================================
-    // Intent / Deep Link
-    // ============================================================
-
     private fun handleIntent(intent: Intent?) {
         val dataUri = intent?.data ?: return
         if (Intent.ACTION_VIEW != intent.action) return
@@ -198,12 +193,98 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ============================================================
-    // Extraction Engine (Faselhd + sites with iframes)
+    // Native Packer Unpacker Logic (أقصى سرعة لروابط ##ext)
+    // ============================================================
+
+    fun startNativePackerExtraction(targetUrl: String) {
+        if (isExtracting) stopExtraction()
+        isExtracting = true
+
+        runOnUiThread {
+            mainWebView.evaluateJavascript("window.showLoadingLoop()", null)
+        }
+
+        networkExecutor.execute {
+            try {
+                val urlConnection = URL(targetUrl).openConnection() as HttpURLConnection
+                urlConnection.apply {
+                    requestMethod = "GET"
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    setRequestProperty("User-Agent", DESKTOP_UA)
+                }
+
+                val responseCode = urlConnection.responseCode
+                if (responseCode == 200) {
+                    val reader = BufferedReader(InputStreamReader(urlConnection.inputStream))
+                    val htmlContent = reader.use { it.readText() }
+
+                    // تعبير نمطي للبحث عن دالة التعبئة البرمجية eval(function(p,a,c,k,e,d)...
+                    val packerRegex = Regex(
+                        "eval\\(function\\(p,a,c,k,e,[dr]\\)\\{.*?\\}\\('(.*?)',(\\d+),(\\d+),'(.*?)'\\.split\\('\\|'\\)\\)\\)",
+                        RegexOption.DOT_MATCHES_ALL
+                    )
+
+                    val matchResult = packerRegex.find(htmlContent)
+                    if (matchResult != null) {
+                        val p = matchResult.groupValues[1]
+                        val a = matchResult.groupValues[2].toInt()
+                        val c = matchResult.groupValues[3].toInt()
+                        val k = matchResult.groupValues[4].split("|")
+
+                        val unpackedCode = nativeUnpack(p, a, c, k)
+
+                        // البحث عن روابط البث بداخل الكود بعد فكه
+                        val streamRegex = Regex("file:\"([^\"]+)\"")
+                        val streamMatch = streamRegex.find(unpackedCode)
+
+                        val streamUrl = streamMatch?.groupValues?.get(1)
+                            ?: Regex("src\\s*:\\s*[\"']([^\"']+\\.m3u8[^\"']*)[\"']").find(unpackedCode)?.groupValues?.get(1)
+
+                        if (!streamUrl.isNullOrEmpty() && isExtracting) {
+                            runOnUiThread {
+                                stopExtraction()
+                                mainWebView.evaluateJavascript("window.hideLoadingLoop()", null)
+                                mainWebView.evaluateJavascript("window.playExtractedUrl('${streamUrl.replace("'", "\\'")}')", null)
+                            }
+                        } else {
+                            throw Exception("لم يتم العثور على رابط البث في الكود المفكك")
+                        }
+                    } else {
+                        throw Exception("لم يتم العثور على كود مشفر بنمط Packer")
+                    }
+                } else {
+                    throw Exception("فشل جلب الصفحة: HTTP $responseCode")
+                }
+            } catch (e: Exception) {
+                if (isExtracting) {
+                    runOnUiThread {
+                        stopExtractionWithError("خطأ أثناء الاستخراج السريع: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun nativeUnpack(p: String, a: Int, c: Int, k: List<String>): String {
+        var unpacked = p
+        for (i in c - 1 downTo 0) {
+            if (i < k.size && k[i].isNotEmpty()) {
+                val word36 = java.lang.Integer.toString(i, 36)
+                // مطابقة الحدود اللفظية بدقة كما في التعبير النمطي للبايثون
+                unpacked = unpacked.replace(Regex("\\b$word36\\b"), k[i])
+            }
+        }
+        return unpacked
+    }
+
+    // ============================================================
+    // WebView Extraction (محسن لتسريع روابط ##ex)
     // ============================================================
 
     fun startBackgroundExtraction(mainUrl: String) {
         runOnUiThread {
-            if (isExtracting) stopExtraction()   // إلغاء استخراج سابق إذا وُجد
+            if (isExtracting) stopExtraction()
             isExtracting = true
             lastExtractionUrl = mainUrl
 
@@ -211,13 +292,18 @@ class MainActivity : AppCompatActivity() {
 
             extractorWebView = buildExtractorWebView()
 
+            // إرفاق الـ WebView بالواجهة بحجم مجهري (1x1 بكسل) في الزاوية السفلى لمنع إخماد المعالج
+            val layoutParams = FrameLayout.LayoutParams(1, 1).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+            }
+            containerLayout.addView(extractorWebView, layoutParams)
+
             val headers = HashMap<String, String>()
             headers["Referer"] = deriveSiteReferer(mainUrl)
 
             extractorWebView?.webViewClient = buildStage1Client()
             extractorWebView?.loadUrl(mainUrl, headers)
 
-            // Global timeout — يُلغي الاستخراج إذا تجاوز الوقت
             handler.postDelayed({
                 if (isExtracting) {
                     runOnUiThread {
@@ -228,11 +314,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * بناء WebView المستخرج بإعدادات مُحسَّنة للسرعة:
-     * - حجب الصور والإعلانات والتتبع → أقل بيانات + أسرع تحميل
-     * - User Agent ديسكتوب
-     */
     private fun buildExtractorWebView(): WebView {
         return WebView(this@MainActivity).apply {
             settings.apply {
@@ -240,14 +321,13 @@ class MainActivity : AppCompatActivity() {
                 domStorageEnabled = true
                 userAgentString   = DESKTOP_UA
                 mixedContentMode  = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                loadsImagesAutomatically = false   // حجب الصور تماماً
-                blockNetworkImage        = true     // لا صور من الشبكة
+                loadsImagesAutomatically = false
+                blockNetworkImage        = true
                 setRenderPriority(WebSettings.RenderPriority.HIGH)
             }
         }
     }
 
-    /** إنشاء Referer من الـ URL الأصلي */
     private fun deriveSiteReferer(url: String): String {
         return try {
             val uri = android.net.Uri.parse(url)
@@ -257,7 +337,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** فلترة الموارد غير الضرورية أثناء الاستخراج */
     private fun shouldBlockResource(urlStr: String): Boolean {
         val lower = urlStr.lowercase()
         return BLOCKED_EXTENSIONS.any { lower.contains(it) } ||
@@ -268,10 +347,6 @@ class MainActivity : AppCompatActivity() {
         WebResourceResponse("text/plain", "UTF-8",
             java.io.ByteArrayInputStream(ByteArray(0)))
 
-    // ============================================================
-    // Stage 1: الصفحة الرئيسية → البحث عن iframe أو m3u8 مباشرة
-    // ============================================================
-
     private fun buildStage1Client(): WebViewClient {
         return object : WebViewClient() {
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
@@ -281,12 +356,7 @@ class MainActivity : AppCompatActivity() {
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                 val urlStr = request?.url?.toString() ?: ""
 
-                // إذا كان m3u8 ظهر مباشرة في الطلبات → اغتنمه فوراً!
                 if (urlStr.contains(".m3u8", ignoreCase = true) && isExtracting) {
-                    val clean = urlStr.split("?")[0].let { base ->
-                        if (base.contains(".m3u8", ignoreCase = true)) urlStr else base
-                    }
-                    // التحقق من أنه ليس رابط مجزأ segment
                     if (!urlStr.contains("seg") && !urlStr.contains("/seg") &&
                         !urlStr.contains("chunk") && !urlStr.contains("/chunk")) {
                         handler.post { onM3u8Found(urlStr) }
@@ -297,33 +367,25 @@ class MainActivity : AppCompatActivity() {
                 return null
             }
 
-            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                super.onPageStarted(view, url, favicon)
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
                 startPollingForIframe()
             }
         }
     }
 
-    // ============================================================
-    // Stage 1 Polling: البحث عن رابط الـ iframe في الصفحة
-    // ============================================================
-
     private fun startPollingForIframe() {
         stopIframePolling()
 
-        // JS يبحث عن عدة أنماط شائعة لروابط الـ iframe في مواقع البث
         val js = """
             (function() {
-                // نمط faselhd الأصلي
                 var li = document.querySelector('li[onclick*="player_iframe"]');
                 if (li) {
                     var m = li.getAttribute('onclick').match(/'([^']+)'/);
                     if (m) return m[1];
                 }
-                // نمط iframe مباشر
                 var iframe = document.querySelector('iframe[src*="embed"], iframe[src*="player"], iframe[src*="video"]');
                 if (iframe && iframe.src && iframe.src.length > 10) return iframe.src;
-                // نمط data-src
                 var ds = document.querySelector('[data-src*="embed"], [data-src*="player"]');
                 if (ds) return ds.getAttribute('data-src');
                 return null;
@@ -354,10 +416,6 @@ class MainActivity : AppCompatActivity() {
         iframePollingRunnable = null
     }
 
-    // ============================================================
-    // Stage 2: تحميل الـ iframe والبحث عن m3u8
-    // ============================================================
-
     private fun loadIframeAndExtractM3u8(iframeUrl: String) {
         runOnUiThread {
             val headers = HashMap<String, String>()
@@ -371,7 +429,6 @@ class MainActivity : AppCompatActivity() {
                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                     val urlStr = request?.url?.toString() ?: ""
 
-                    // اعتراض m3u8 مباشرة من الشبكة — أسرع من polling
                     if (urlStr.contains(".m3u8", ignoreCase = true) && isExtracting) {
                         if (!urlStr.contains("seg") && !urlStr.contains("chunk")) {
                             handler.post { onM3u8Found(urlStr) }
@@ -382,8 +439,8 @@ class MainActivity : AppCompatActivity() {
                     return null
                 }
 
-                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                    super.onPageStarted(view, url, favicon)
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
                     startPollingForM3u8()
                 }
             }
@@ -392,29 +449,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ============================================================
-    // Stage 2 Polling: البحث عن m3u8 في DOM
-    // ============================================================
-
     private fun startPollingForM3u8() {
         pollingRunnable?.let { handler.removeCallbacks(it) }
 
-        // JS يبحث عن m3u8 في عدة أنماط DOM شائعة
         val js = """
             (function() {
-                // نمط faselhd: أزرار الجودة
                 var btns = document.querySelectorAll('button[data-url*=".m3u8"], button.hd_btn');
                 for (var i = 0; i < btns.length; i++) {
                     var u = btns[i].getAttribute('data-url') || btns[i].getAttribute('data-src');
                     if (u && u.indexOf('.m3u8') !== -1) return u;
                 }
-                // نمط source داخل video
                 var src = document.querySelector('video source[src*=".m3u8"]');
                 if (src) return src.getAttribute('src');
-                // نمط video src مباشر
                 var vid = document.querySelector('video[src*=".m3u8"]');
                 if (vid) return vid.getAttribute('src');
-                // نمط script يحتوي على m3u8 (بعض المشغلات تضع الرابط في script)
                 var scripts = document.querySelectorAll('script:not([src])');
                 for (var j = 0; j < scripts.length; j++) {
                     var txt = scripts[j].textContent;
@@ -443,10 +491,6 @@ class MainActivity : AppCompatActivity() {
         handler.post(pollingRunnable!!)
     }
 
-    // ============================================================
-    // نجاح الاستخراج
-    // ============================================================
-
     private fun onM3u8Found(url: String) {
         if (!isExtracting) return
         runOnUiThread {
@@ -456,40 +500,33 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ============================================================
-    // فشل الاستخراج — إخبار المستخدم
-    // ============================================================
-
     private fun stopExtractionWithError(msg: String) {
         stopExtraction()
         val safeMsg = msg.replace("'", "\\'")
-        mainWebView.evaluateJavascript("window.hideLoadingLoop()", null)
-        mainWebView.evaluateJavascript("window.showExtractionError('$safeMsg')", null)
+        runOnUiThread {
+            mainWebView.evaluateJavascript("window.hideLoadingLoop()", null)
+            mainWebView.evaluateJavascript("window.showExtractionError('$safeMsg')", null)
+        }
     }
-
-    // ============================================================
-    // Cleanup
-    // ============================================================
 
     private fun stopExtraction() {
         isExtracting = false
         stopIframePolling()
         pollingRunnable?.let { handler.removeCallbacks(it) }
         pollingRunnable = null
-        extractorWebView?.apply {
-            stopLoading()
-            destroy()
+        runOnUiThread {
+            extractorWebView?.let {
+                containerLayout.removeView(it)
+                it.stopLoading()
+                it.destroy()
+            }
+            extractorWebView = null
         }
-        extractorWebView = null
     }
 
     private fun cleanupHandler() {
         handler.removeCallbacksAndMessages(null)
     }
-
-    // ============================================================
-    // PiP
-    // ============================================================
 
     override fun onPictureInPictureModeChanged(
         isInPictureInPictureMode: Boolean,
@@ -521,7 +558,7 @@ class MainActivity : AppCompatActivity() {
 }
 
 // ============================================================
-// JavaScript Bridge
+// JavaScript Bridge (الجسر البرمجي)
 // ============================================================
 
 class WebAppInterface(private val activity: MainActivity) {
@@ -534,6 +571,12 @@ class WebAppInterface(private val activity: MainActivity) {
     @JavascriptInterface
     fun triggerExtraction(url: String) {
         activity.startBackgroundExtraction(url)
+    }
+
+    // استقبال روابط ##ext لفك حزمتها محلياً بأعلى كفاءة وسرعة
+    @JavascriptInterface
+    fun triggerPackerExtraction(url: String) {
+        activity.startNativePackerExtraction(url)
     }
 
     @JavascriptInterface
