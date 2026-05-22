@@ -64,7 +64,7 @@ body,html { width:100%; height:100%; background:#000; overflow:hidden; padding:0
 <script>
 'use strict';
 var shakaPlayer=null,plyrPlayer=null,playerContainer=null,videoElement=null,titleElement=null,playlistElement=null;
-var isPlaylistOpen=false,isLoading=false,lastUrl=null;
+var isPlaylistOpen=false,isLoading=false,lastUrl=null,originalSourceUrl=null;
 var modes=['mode-contain','mode-cover','mode-fill','mode-original'],currentMode=2;
 var currentPlaylist=[
     {title:"Video #01",src:"https://cdn.plyr.io/static/demo/View_From_A_Blue_Moon_Trailer-720p.mp4"},
@@ -85,7 +85,7 @@ function showError(msg){
 }
 function hideError(){errorOverlay.classList.remove('visible');}
 function showExtractOverlay(msg){
-    extractLabelText.textContent = msg || 'جاري استخراج الرابط...';
+    extractLabelText.textContent=msg||'جاري استخراج الرابط...';
     extractOverlay.classList.add('visible');
 }
 function hideExtractOverlay(){extractOverlay.classList.remove('visible');}
@@ -99,7 +99,15 @@ window.showLoadingLoop = function() {
 };
 window.hideLoadingLoop = hideExtractOverlay;
 
-errRetryBtn.addEventListener('click',function(){hideError();if(lastUrl)loadStream(lastUrl);});
+errRetryBtn.addEventListener('click',function(){
+    hideError();
+    // إعادة استخراج رمز صلاحية وتوقيع جديد في حال انتهت صلاحية الرابط بدلاً من تكرار تشغيل الرابط المنتهي
+    if (originalSourceUrl) {
+        loadStream(originalSourceUrl);
+    } else if (lastUrl) {
+        loadStream(lastUrl);
+    }
+});
 
 function detectType(url){
     var woDRM=url.split('###')[0],woHash=woDRM.split('#')[0];
@@ -159,6 +167,11 @@ async function loadStream(url){
     if(videoElement){try{videoElement.pause();}catch(e){}videoElement.src='';try{videoElement.load();}catch(e){}}
     if(plyrPlayer){try{plyrPlayer.destroy();}catch(e){}plyrPlayer=null;}
     if(shakaPlayer){try{await shakaPlayer.destroy();}catch(e){}shakaPlayer=null;}
+
+    // حفظ الرابط الأصلي الحاوي للـ Tags لإعادة الاستخراج عند فشل البث فجأة أو انتهاء التوكين
+    if(url.indexOf('##ext')!==-1 || url.indexOf('##ex')!==-1 || isFaselTarget(url)){
+        originalSourceUrl=url;
+    }
 
     // 1. معالجة روابط ##ext الأصلية بالنظام الأصلي (Native) بأقصى سرعة
     if(url.indexOf('##ext')!==-1){
@@ -255,11 +268,11 @@ function initCustomUI(playerInstance){
         }
         playerInstance.play();
         isLoading=false;
-        // إخفاء شاشة الاستخراج فقط عندما يكون المشغل مهيئاً وجاهزاً
+        // إخفاء واجهة الاستخراج فور تجهيز وبدء تشغيل الفيديو
         hideExtractOverlay();
     });
 
-    // تأكيد إضافي لإخفاء واجهة الاستخراج عند بدء رندرة الفيديو فعلياً
+    // تأكيد إضافي لإخفاء شاشة الاستخراج عند تفعيل رندرة الفريمات الأولى
     playerInstance.on('playing', function() {
         hideExtractOverlay();
     });
@@ -301,7 +314,7 @@ function initCustomUI(playerInstance){
 }
 
 window.playExtractedUrl=function(url){
-    // عند نجاح الاستخراج، نغير النص فقط ولا نخفيه لضمان عدم ظهور شاشة سوداء أثناء تهيئة المشغل
+    // عند نجاح الاستخراج، نغير نص واجهة التحميل ولا نخفيها فوراً لمنع حدوث شاشة سوداء أثناء تهيئة المشغل
     showExtractOverlay('جارٍ الاتصال بالبث...');
     loadStream(url);
 };
