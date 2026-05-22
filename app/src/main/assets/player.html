@@ -161,7 +161,7 @@ async function handlePackerExtract(rawUrl){
     }
 }
 
-// دالة التحكم المباشر والذكي بعناصر واجهة Plyr لتحديث علامة التظليل/النقطة يدوياً لخيار الـ Auto
+// دالة التحكم المباشر والذكي بعناصر واجهة Plyr لتحديث علامة التظليل يدوياً لخيار الـ Auto
 function updateQualityMenuUI(selectedQuality) {
     if (!playerContainer) return;
     
@@ -189,8 +189,11 @@ function updateQualityMenuUI(selectedQuality) {
 
 async function loadStream(url){
     if(isLoading){isLoading=false;await new Promise(function(r){setTimeout(r,80);});}
+    
+    // إيقاف الفيديو القديم فقط دون تفريغ السورس يدوياً لمنع إطلاق أخطاء شبكة زائفة في الواجهة عند تغيير الحلقة
+    if(videoElement){try{videoElement.pause();}catch(e){}}
+    
     isLoading=true;lastUrl=url;hideError();
-    if(videoElement){try{videoElement.pause();}catch(e){}videoElement.src='';try{videoElement.load();}catch(e){}}
     if(plyrPlayer){try{plyrPlayer.destroy();}catch(e){}plyrPlayer=null;}
     if(shakaPlayer){try{await shakaPlayer.destroy();}catch(e){}shakaPlayer=null;}
 
@@ -251,7 +254,9 @@ async function loadStream(url){
         // مزامنة واجهة Plyr الرسومية لضمان تثبيت النقطة على "Auto" عندما يقوم Shaka بتعديل الجودة ذاتياً
         shakaPlayer.addEventListener('adaptation', function() {
             if (shakaPlayer && shakaPlayer.getConfiguration().abr.enabled) {
-                updateQualityMenuUI('auto');
+                setTimeout(function() {
+                    updateQualityMenuUI('auto');
+                }, 50);
             }
         });
 
@@ -266,7 +271,11 @@ async function loadStream(url){
             var tracks=shakaPlayer.getVariantTracks(),heights=[],seen={};
             tracks.forEach(function(tr){if(tr.height&&!seen[tr.height]){seen[tr.height]=true;heights.push(tr.height);}});
             heights.sort(function(a,b){return b-a;});
-            var plyrCfg={controls:['rewind','play','fast-forward','progress','current-time','mute','volume','captions','settings','pip','fullscreen'],settings:['quality','speed','captions']};
+            var plyrCfg={
+                controls:['rewind','play','fast-forward','progress','current-time','mute','volume','captions','settings','pip','fullscreen'],
+                settings:['quality','speed','captions'],
+                speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] } // إجبار المشغل على بدء سرعة Normal
+            };
             if(heights.length>0){plyrCfg.quality={default:'auto',options:['auto'].concat(heights),forced:true,onChange:function(q){applyQuality(q);}};}
             plyrPlayer=new Plyr(videoElement,plyrCfg);
             initCustomUI(plyrPlayer);
@@ -278,7 +287,15 @@ async function loadStream(url){
     }else{
         videoElement.src=manifestUri;
         videoElement.addEventListener('error',function(){if(!isLoading)return;isLoading=false;showError('فشل تحميل الفيديو — تحقق من صحة الرابط');},{once:true});
-        plyrPlayer=new Plyr(videoElement,{controls:['rewind','play','fast-forward','progress','current-time','mute','volume','captions','settings','pip','fullscreen'],seekTime:10,settings:['speed','captions'],fullscreen:{iosNative:true,video:true,container:'.plyr'},hideControls:true,clickToPlay:false});
+        plyrPlayer=new Plyr(videoElement,{
+            controls:['rewind','play','fast-forward','progress','current-time','mute','volume','captions','settings','pip','fullscreen'],
+            seekTime:10,
+            settings:['speed','captions'],
+            speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] }, // إجبار المشغل على بدء سرعة Normal للفيديوهات العادية
+            fullscreen:{iosNative:true,video:true,container:'.plyr'},
+            hideControls:true,
+            clickToPlay:false
+        });
         initCustomUI(plyrPlayer);
     }
 }
@@ -287,14 +304,19 @@ function applyQuality(q){
     if(!shakaPlayer)return;
     if(q==='auto'||q===0){
         shakaPlayer.configure({abr:{enabled:true}});
-        updateQualityMenuUI('auto');
+        // استخدام مؤقت بسيط لتخطي تداخلات الرسم الداخلي لـ Plyr وتثبيت التظليل
+        setTimeout(function() {
+            updateQualityMenuUI('auto');
+        }, 50);
     }
     else{
         shakaPlayer.configure({abr:{enabled:false}});
         var t=Number(q),f=shakaPlayer.getVariantTracks().filter(function(tr){return tr.height===t;});
         if(f.length>0) {
             shakaPlayer.selectVariantTrack(f.sort(function(a,b){return b.bandwidth-a.bandwidth;})[0],true);
-            updateQualityMenuUI(q);
+            setTimeout(function() {
+                updateQualityMenuUI(q);
+            }, 50);
         }
     }
 }
@@ -332,7 +354,9 @@ function initCustomUI(playerInstance){
     playerInstance.on('playing', function() {
         hideExtractOverlay();
         if (shakaPlayer && shakaPlayer.getConfiguration().abr.enabled) {
-            updateQualityMenuUI('auto');
+            setTimeout(function() {
+                updateQualityMenuUI('auto');
+            }, 50);
         }
     });
 
