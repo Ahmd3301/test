@@ -267,16 +267,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun nativeUnpack(p: String, a: Int, c: Int, k: List<String>): String {
-        var unpacked = p
-        for (i in c - 1 downTo 0) {
-            if (i < k.size && k[i].isNotEmpty()) {
-                val word36 = java.lang.Integer.toString(i, 36)
-                // مطابقة الحدود اللفظية بدقة كما في التعبير النمطي للبايثون
-                unpacked = unpacked.replace(Regex("\\b$word36\\b"), k[i])
-            }
+    var unpacked = p
+    for (i in c - 1 downTo 0) {
+        if (i < k.size && k[i].isNotEmpty()) {
+            val word36 = java.lang.Integer.toString(i, 36)
+            // استخدام quoteReplacement لحماية الرموز الخاصة مثل $ و \ أثناء الاستبدال بالتعبيرات النمطية
+            val safeReplacement = java.util.regex.Matcher.quoteReplacement(k[i])
+            unpacked = unpacked.replace(Regex("\\b$word36\\b"), safeReplacement)
         }
-        return unpacked
     }
+    return unpacked
+}
 
     // ============================================================
     // WebView Extraction (محسن لتسريع روابط ##ex)
