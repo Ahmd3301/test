@@ -205,7 +205,13 @@ async function loadStream(url){
     if(t.isHls||t.isDash){
         shaka.polyfill.installAll();
         shakaPlayer=new shaka.Player(videoElement);
-        shakaPlayer.configure({streaming:{bufferingGoal:8,rebufferingGoal:1.5,bufferBehind:10}});
+        
+        // تفعيل ميزة اختيار الجودة التلقائي (ABR) بشكل صريح وافتراضي عند التهيئة الأولى للتحميل
+        shakaPlayer.configure({
+            streaming:{bufferingGoal:8,rebufferingGoal:1.5,bufferBehind:10},
+            abr: { enabled: true }
+        });
+
         shakaPlayer.addEventListener('error',function(ev){
             if(!isLoading)return;isLoading=false;
             var code=ev.detail?ev.detail.code:'?';
@@ -215,6 +221,16 @@ async function loadStream(url){
             else if(code===4)msg='خطأ في الشبكة — تحقق من الرابط';
             showError(msg);
         });
+
+        // مزامنة واجهة Plyr لضمان بقاء علامة الصح على خيار "Auto" عندما يقوم Shaka بتعديل الجودة ذاتياً
+        shakaPlayer.addEventListener('adaptation', function() {
+            if (shakaPlayer && shakaPlayer.getConfiguration().abr.enabled) {
+                if (plyrPlayer && plyrPlayer.quality !== 'auto') {
+                    plyrPlayer.quality = 'auto';
+                }
+            }
+        });
+
         if(t.hasDRM){
             try{var kp=url.split('###')[1].split(':');shakaPlayer.configure({drm:{clearKeys:{[base64ToHex(kp[1].trim())]:base64ToHex(kp[0].trim())}}});}
             catch(e){showError('خطأ في إعداد مفاتيح التشفير (DRM)');isLoading=false;return;}
@@ -268,11 +284,17 @@ function initCustomUI(playerInstance){
         }
         playerInstance.play();
         isLoading=false;
+        
+        // إجبار واجهة Plyr على تحديد خيار الـ auto كخيار افتراضي ونشط بصرياً عند الجاهزية
+        setTimeout(function() {
+            if (plyrPlayer) plyrPlayer.quality = 'auto';
+        }, 150);
+        
         // إخفاء واجهة الاستخراج فور تجهيز وبدء تشغيل الفيديو
         hideExtractOverlay();
     });
 
-    // تأكيد إضافي لإخفاء شاشة الاستخراج عند تفعيل رندرة الفريمات الأولى
+    // تأكيد إضافي لإخفاء واجهة الاستخراج عند بدء رندرة الفيديو فعلياً
     playerInstance.on('playing', function() {
         hideExtractOverlay();
     });
