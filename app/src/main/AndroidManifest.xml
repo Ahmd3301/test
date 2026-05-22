@@ -8,7 +8,8 @@
         android:hardwareAccelerated="true"
         android:label="Video Plyr"
         android:theme="@style/Theme.AppCompat.NoActionBar"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name="com.videoplyrio.app.MainActivity"
@@ -19,20 +20,16 @@
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode"
             android:windowSoftInputMode="adjustNothing">
 
-            <!-- Launcher Intent -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Deep Link: videoplyrio://open?data=... -->
             <intent-filter android:label="Open video playlist">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="videoplyrio"
-                    android:host="open" />
+                <data android:scheme="videoplyrio" android:host="open" />
             </intent-filter>
 
         </activity>
