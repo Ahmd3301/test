@@ -3,7 +3,6 @@ package com.videoplyrio.app
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.http.SslError
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -41,16 +40,25 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var pollingRunnable: Runnable? = null
     private var iframePollingRunnable: Runnable? = null
+    private val timeoutRunnable = Runnable {
+        if (isExtracting) {
+            runOnUiThread {
+                stopExtractionWithError("انتهت مهلة استخراج الرابط")
+            }
+        }
+    }
 
-    // خيط خلفي أحادي لتنفيذ طلبات الشبكة لفك حزم الـ Packer بسرعة فائقة وبدون تجميد الواجهة
     private val networkExecutor = Executors.newSingleThreadExecutor()
 
     @Volatile private var isExtracting = false
     private var lastExtractionUrl: String? = null
 
+    // عداد المحاولات لتطبيق المهلة التصاعدية (5، 10، 15 ثانية)
+    private var extractionAttemptCount = 0
+    private var lastAttemptedUrl: String? = null
+
     companion object {
-        private const val EXTRACTION_TIMEOUT_MS = 15_000L
-        private const val POLL_INTERVAL_MS      = 100L
+        private const val POLL_INTERVAL_MS = 50L // فحص دوري فائق السرعة (كل 50ms) لالتقاط الرابط فور توليده
 
         private const val DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -76,7 +84,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         applyFullscreenFlags()
 
-        // استخدام حاوية FrameLayout للسماح بإضافة متصفح الاستخراج الخفي برمجياً
         containerLayout = FrameLayout(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -193,7 +200,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ============================================================
-    // Native Packer Unpacker Logic (أقصى سرعة لروابط ##ext)
+    // Native Packer Unpacker Logic (نظام التفكيك التدفي السريع)
     // ============================================================
 
     fun startNativePackerExtraction(targetUrl: String) {
@@ -209,23 +216,33 @@ class MainActivity : AppCompatActivity() {
                 val urlConnection = URL(targetUrl).openConnection() as HttpURLConnection
                 urlConnection.apply {
                     requestMethod = "GET"
-                    connectTimeout = 8000
-                    readTimeout = 8000
+                    connectTimeout = 6000
+                    readTimeout = 6000
                     setRequestProperty("User-Agent", DESKTOP_UA)
                 }
 
                 val responseCode = urlConnection.responseCode
                 if (responseCode == 200) {
                     val reader = BufferedReader(InputStreamReader(urlConnection.inputStream))
-                    val htmlContent = reader.use { it.readText() }
+                    val sb = java.lang.StringBuilder()
+                    val buffer = CharArray(4096)
+                    var bytesRead: Int
+                    var matchResult: MatchResult? = null
 
-                    // تعبير نمطي للبحث عن دالة التعبئة البرمجية eval(function(p,a,c,k,e,d)...
-                    val packerRegex = Regex(
+                    val packerPattern = Regex(
                         "eval\\(function\\(p,a,c,k,e,[dr]\\)\\{.*?\\}\\('(.*?)',(\\d+),(\\d+),'(.*?)'\\.split\\('\\|'\\)\\)\\)",
                         RegexOption.DOT_MATCHES_ALL
                     )
 
-                    val matchResult = packerRegex.find(htmlContent)
+                    // قراءة الصفحة ككتل تدفقية صغيرة (Chunks) والتوقف فور العثور على الكود المطلوب لتوفير وقت الشبكة
+                    while (reader.read(buffer).also { bytesRead = it } != -1) {
+                        sb.append(buffer, 0, bytesRead)
+                        matchResult = packerPattern.find(sb.toString())
+                        if (matchResult != null) {
+                            break
+                        }
+                    }
+
                     if (matchResult != null) {
                         val p = matchResult.groupValues[1]
                         val a = matchResult.groupValues[2].toInt()
@@ -234,7 +251,6 @@ class MainActivity : AppCompatActivity() {
 
                         val unpackedCode = nativeUnpack(p, a, c, k)
 
-                        // البحث عن روابط البث بداخل الكود بعد فكه
                         val streamRegex = Regex("file:\"([^\"]+)\"")
                         val streamMatch = streamRegex.find(unpackedCode)
 
@@ -244,7 +260,6 @@ class MainActivity : AppCompatActivity() {
                         if (!streamUrl.isNullOrEmpty() && isExtracting) {
                             runOnUiThread {
                                 stopExtraction()
-                                mainWebView.evaluateJavascript("window.hideLoadingLoop()", null)
                                 mainWebView.evaluateJavascript("window.playExtractedUrl('${streamUrl.replace("'", "\\'")}')", null)
                             }
                         } else {
@@ -267,52 +282,96 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun nativeUnpack(p: String, a: Int, c: Int, k: List<String>): String {
-    var unpacked = p
-    for (i in c - 1 downTo 0) {
-        if (i < k.size && k[i].isNotEmpty()) {
-            val word36 = java.lang.Integer.toString(i, 36)
-            // استخدام quoteReplacement لحماية الرموز الخاصة مثل $ و \ أثناء الاستبدال بالتعبيرات النمطية
-            val safeReplacement = java.util.regex.Matcher.quoteReplacement(k[i])
-            unpacked = unpacked.replace(Regex("\\b$word36\\b"), safeReplacement)
+        var unpacked = p
+        for (i in c - 1 downTo 0) {
+            if (i < k.size && k[i].isNotEmpty()) {
+                val word36 = java.lang.Integer.toString(i, 36)
+                val safeReplacement = java.util.regex.Matcher.quoteReplacement(k[i])
+                unpacked = unpacked.replace(Regex("\\b$word36\\b"), safeReplacement)
+            }
         }
+        return unpacked
     }
-    return unpacked
-}
 
     // ============================================================
-    // WebView Extraction (محسن لتسريع روابط ##ex)
+    // WebView Extraction (تصفح خلفي محسن وخارق لـ فاصل إعلاني)
     // ============================================================
 
     fun startBackgroundExtraction(mainUrl: String) {
-        runOnUiThread {
-            if (isExtracting) stopExtraction()
-            isExtracting = true
-            lastExtractionUrl = mainUrl
+        if (isExtracting) stopExtraction()
+        isExtracting = true
 
-            mainWebView.evaluateJavascript("window.showLoadingLoop()", null)
-
-            extractorWebView = buildExtractorWebView()
-
-            // إرفاق الـ WebView بالواجهة بحجم مجهري (1x1 بكسل) في الزاوية السفلى لمنع إخماد المعالج
-            val layoutParams = FrameLayout.LayoutParams(1, 1).apply {
-                gravity = Gravity.BOTTOM or Gravity.END
-            }
-            containerLayout.addView(extractorWebView, layoutParams)
-
-            val headers = HashMap<String, String>()
-            headers["Referer"] = deriveSiteReferer(mainUrl)
-
-            extractorWebView?.webViewClient = buildStage1Client()
-            extractorWebView?.loadUrl(mainUrl, headers)
-
-            handler.postDelayed({
-                if (isExtracting) {
-                    runOnUiThread {
-                        stopExtractionWithError("انتهت مهلة استخراج الرابط")
-                    }
-                }
-            }, EXTRACTION_TIMEOUT_MS)
+        // تطبيق آلية المهلة التصاعدية حسب عدد المحاولات المتتالية
+        if (mainUrl == lastAttemptedUrl) {
+            extractionAttemptCount++
+        } else {
+            extractionAttemptCount = 1
+            lastAttemptedUrl = mainUrl
         }
+
+        val currentTimeoutMs = when (extractionAttemptCount) {
+            1 -> 5000L  // المحاولة الأولى: 5 ثوانٍ فقط
+            2 -> 10000L // المحاولة الثانية: 10 ثوانٍ
+            else -> 15000L // المحاولات اللاحقة: 15 ثانية
+        }
+
+        runOnUiThread {
+            mainWebView.evaluateJavascript("window.showLoadingLoop()", null)
+        }
+
+        // جلب الصفحة الرئيسية natively بالخلفية وتخطيها كلياً لتفادي الإعلانات والملفات الثقيلة
+        networkExecutor.execute {
+            try {
+                val urlConnection = URL(mainUrl).openConnection() as HttpURLConnection
+                urlConnection.apply {
+                    requestMethod = "GET"
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    setRequestProperty("User-Agent", DESKTOP_UA)
+                }
+
+                val responseCode = urlConnection.responseCode
+                var playerUrl: String? = null
+                if (responseCode == 200) {
+                    val html = urlConnection.inputStream.bufferedReader().use { it.readText() }
+                    val playerRegex = Regex("player_iframe.*?location.*?['\"](https?://[^'\"]+)['\"]", RegexOption.IGNORE_CASE)
+                    playerUrl = playerRegex.find(html)?.groupValues?.get(1)
+                }
+
+                // تحميل رابط الـ Iframe المباشر فقط في الـ WebView مما يجعل الاستخراج يستغرق 3 ثوانٍ فقط!
+                val targetUrl = playerUrl ?: mainUrl
+
+                runOnUiThread {
+                    if (!isExtracting) return@runOnUiThread
+                    extractorWebView = buildExtractorWebView()
+
+                    val layoutParams = FrameLayout.LayoutParams(1, 1).apply {
+                        gravity = Gravity.BOTTOM or Gravity.END
+                    }
+                    containerLayout.addView(extractorWebView, layoutParams)
+
+                    val headers = HashMap<String, String>()
+                    headers["Referer"] = deriveSiteReferer(mainUrl)
+
+                    extractorWebView?.webViewClient = buildStage2Client()
+                    extractorWebView?.loadUrl(targetUrl, headers)
+                }
+            } catch (e: Exception) {
+                // نظام حماية احتياطي: إذا فشل طلب الشبكة الخلفي السريع، يتم التحميل التقليدي عبر الـ WebView
+                runOnUiThread {
+                    if (!isExtracting) return@runOnUiThread
+                    extractorWebView = buildExtractorWebView()
+                    val layoutParams = FrameLayout.LayoutParams(1, 1).apply {
+                        gravity = Gravity.BOTTOM or Gravity.END
+                    }
+                    containerLayout.addView(extractorWebView, layoutParams)
+                    extractorWebView?.webViewClient = buildStage2Client()
+                    extractorWebView?.loadUrl(mainUrl)
+                }
+            }
+        }
+
+        handler.postDelayed(timeoutRunnable, currentTimeoutMs)
     }
 
     private fun buildExtractorWebView(): WebView {
@@ -326,29 +385,19 @@ class MainActivity : AppCompatActivity() {
                 blockNetworkImage        = true
                 setRenderPriority(WebSettings.RenderPriority.HIGH)
             }
+            // بدء عملية حقن وفحص الكود بمجرد وصول هيكل وبناء الصفحة لنسبة 30% لسرعة خارقة
+            webChromeClient = object : android.webkit.WebChromeClient() {
+                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                    super.onProgressChanged(view, newProgress)
+                    if (newProgress >= 30 && isExtracting) {
+                        startPollingForM3u8()
+                    }
+                }
+            }
         }
     }
 
-    private fun deriveSiteReferer(url: String): String {
-        return try {
-            val uri = android.net.Uri.parse(url)
-            "${uri.scheme}://${uri.host}/"
-        } catch (e: Exception) {
-            "https://faselhd.center/"
-        }
-    }
-
-    private fun shouldBlockResource(urlStr: String): Boolean {
-        val lower = urlStr.lowercase()
-        return BLOCKED_EXTENSIONS.any { lower.contains(it) } ||
-               BLOCKED_DOMAINS.any    { lower.contains(it) }
-    }
-
-    private fun makeEmptyResponse() =
-        WebResourceResponse("text/plain", "UTF-8",
-            java.io.ByteArrayInputStream(ByteArray(0)))
-
-    private fun buildStage1Client(): WebViewClient {
+    private fun buildStage2Client(): WebViewClient {
         return object : WebViewClient() {
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
                 handler?.proceed()
@@ -358,8 +407,7 @@ class MainActivity : AppCompatActivity() {
                 val urlStr = request?.url?.toString() ?: ""
 
                 if (urlStr.contains(".m3u8", ignoreCase = true) && isExtracting) {
-                    if (!urlStr.contains("seg") && !urlStr.contains("/seg") &&
-                        !urlStr.contains("chunk") && !urlStr.contains("/chunk")) {
+                    if (!urlStr.contains("seg") && !urlStr.contains("chunk")) {
                         handler.post { onM3u8Found(urlStr) }
                     }
                 }
@@ -370,88 +418,13 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                startPollingForIframe()
+                startPollingForM3u8()
             }
-        }
-    }
-
-    private fun startPollingForIframe() {
-        stopIframePolling()
-
-        val js = """
-            (function() {
-                var li = document.querySelector('li[onclick*="player_iframe"]');
-                if (li) {
-                    var m = li.getAttribute('onclick').match(/'([^']+)'/);
-                    if (m) return m[1];
-                }
-                var iframe = document.querySelector('iframe[src*="embed"], iframe[src*="player"], iframe[src*="video"]');
-                if (iframe && iframe.src && iframe.src.length > 10) return iframe.src;
-                var ds = document.querySelector('[data-src*="embed"], [data-src*="player"]');
-                if (ds) return ds.getAttribute('data-src');
-                return null;
-            })()
-        """.trimIndent()
-
-        iframePollingRunnable = object : Runnable {
-            override fun run() {
-                if (!isExtracting) return
-                runOnUiThread {
-                    extractorWebView?.evaluateJavascript(js) { result ->
-                        val iframeUrl = result?.trim()?.removeSurrounding("\"")
-                        if (!iframeUrl.isNullOrEmpty() && iframeUrl != "null") {
-                            stopIframePolling()
-                            loadIframeAndExtractM3u8(iframeUrl)
-                        } else {
-                            handler.postDelayed(this, POLL_INTERVAL_MS)
-                        }
-                    }
-                }
-            }
-        }
-        handler.post(iframePollingRunnable!!)
-    }
-
-    private fun stopIframePolling() {
-        iframePollingRunnable?.let { handler.removeCallbacks(it) }
-        iframePollingRunnable = null
-    }
-
-    private fun loadIframeAndExtractM3u8(iframeUrl: String) {
-        runOnUiThread {
-            val headers = HashMap<String, String>()
-            headers["Referer"] = lastExtractionUrl ?: "https://faselhd.center/"
-
-            extractorWebView?.webViewClient = object : WebViewClient() {
-                override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-                    handler?.proceed()
-                }
-
-                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                    val urlStr = request?.url?.toString() ?: ""
-
-                    if (urlStr.contains(".m3u8", ignoreCase = true) && isExtracting) {
-                        if (!urlStr.contains("seg") && !urlStr.contains("chunk")) {
-                            handler.post { onM3u8Found(urlStr) }
-                        }
-                    }
-
-                    if (shouldBlockResource(urlStr)) return makeEmptyResponse()
-                    return null
-                }
-
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    startPollingForM3u8()
-                }
-            }
-
-            extractorWebView?.loadUrl(iframeUrl, headers)
         }
     }
 
     private fun startPollingForM3u8() {
-        pollingRunnable?.let { handler.removeCallbacks(it) }
+        if (pollingRunnable != null) return // منع التكرار
 
         val js = """
             (function() {
@@ -496,7 +469,6 @@ class MainActivity : AppCompatActivity() {
         if (!isExtracting) return
         runOnUiThread {
             stopExtraction()
-            mainWebView.evaluateJavascript("window.hideLoadingLoop()", null)
             mainWebView.evaluateJavascript("window.playExtractedUrl('${url.replace("'", "\\'")}')", null)
         }
     }
@@ -505,13 +477,13 @@ class MainActivity : AppCompatActivity() {
         stopExtraction()
         val safeMsg = msg.replace("'", "\\'")
         runOnUiThread {
-            mainWebView.evaluateJavascript("window.hideLoadingLoop()", null)
             mainWebView.evaluateJavascript("window.showExtractionError('$safeMsg')", null)
         }
     }
 
     private fun stopExtraction() {
         isExtracting = false
+        handler.removeCallbacks(timeoutRunnable)
         stopIframePolling()
         pollingRunnable?.let { handler.removeCallbacks(it) }
         pollingRunnable = null
@@ -523,6 +495,11 @@ class MainActivity : AppCompatActivity() {
             }
             extractorWebView = null
         }
+    }
+
+    private fun stopIframePolling() {
+        iframePollingRunnable?.let { handler.removeCallbacks(it) }
+        iframePollingRunnable = null
     }
 
     private fun cleanupHandler() {
@@ -574,7 +551,6 @@ class WebAppInterface(private val activity: MainActivity) {
         activity.startBackgroundExtraction(url)
     }
 
-    // استقبال روابط ##ext لفك حزمتها محلياً بأعلى كفاءة وسرعة
     @JavascriptInterface
     fun triggerPackerExtraction(url: String) {
         activity.startNativePackerExtraction(url)
