@@ -3,6 +3,7 @@ package com.videoplyrio.app
 import android.content.Intent
 import android.content.res.Configuration
 import android.net.http.SslError
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -395,6 +396,25 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun deriveSiteReferer(url: String): String {
+        return try {
+            val uri = android.net.Uri.parse(url)
+            "${uri.scheme}://${uri.host}/"
+        } catch (e: Exception) {
+            "https://faselhd.center/"
+        }
+    }
+
+    private fun shouldBlockResource(urlStr: String): Boolean {
+        val lower = urlStr.lowercase()
+        return BLOCKED_EXTENSIONS.any { lower.contains(it) } ||
+               BLOCKED_DOMAINS.any    { lower.contains(it) }
+    }
+
+    private fun makeEmptyResponse(): WebResourceResponse {
+        return WebResourceResponse("text/plain", "UTF-8", java.io.ByteArrayInputStream(ByteArray(0)))
     }
 
     private fun buildStage2Client(): WebViewClient {
